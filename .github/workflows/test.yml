@@ -1,0 +1,68 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install anthropic python-dotenv
+
+      - name: Run unit tests
+        run: python tests/test_unit.py
+
+  session-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        session: [v0, v1, v2, v3, v4, v5, v6, v7, v8a, v8b, v8c, v9]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install anthropic python-dotenv
+
+      - name: Run ${{ matrix.session }} tests
+        env:
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
+          TEST_BASE_URL: ${{ secrets.TEST_BASE_URL }}
+          TEST_MODEL: ${{ secrets.TEST_MODEL }}
+        run: python tests/test_${{ matrix.session }}.py
+
+  web-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build

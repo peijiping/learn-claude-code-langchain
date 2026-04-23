@@ -1,0 +1,387 @@
+{
+  "examples": [
+    {
+      "example_id": "示例1-高危患者",
+      "description": "中年男性，2级高血压，合并多种危险因素和靶器官损害",
+      "patient_evidence": {
+        "patient_id": "P202601001",
+        "demographics": {
+          "age": 56,
+          "sex": "male"
+        },
+        "blood_pressure": {
+          "sbp": 158,
+          "dbp": 96,
+          "measurement_type": "clinic",
+          "measurement_times": 3,
+          "date": "2026-01-12",
+          "source": "门诊病历"
+        },
+        "medications": {
+          "antihypertensive": {
+            "on_treatment": true,
+            "classes": ["CCB", "ARB"],
+            "drug_names": ["氨氯地平", "缬沙坦"],
+            "source": "用药医嘱"
+          },
+          "non_antihypertensive_risk_drugs": {
+            "nsaids": false,
+            "glucocorticoid": false,
+            "oral_contraceptives": null
+          }
+        },
+        "lab": {
+          "kidney": {
+            "creatinine": {
+              "value": 128,
+              "unit": "μmol/L",
+              "date": "2026-01-10",
+              "source": "检验报告"
+            },
+            "egfr": {
+              "value": 58,
+              "unit": "ml/min/1.73m2",
+              "date": "2026-01-10",
+              "source": "检验报告"
+            },
+            "urine_protein": {
+              "value": "+",
+              "unit": null,
+              "date": "2026-01-10",
+              "source": "尿常规"
+            }
+          },
+          "glucose": {
+            "fasting_glucose": {
+              "value": 7.2,
+              "unit": "mmol/L",
+              "date": "2026-01-10",
+              "source": "检验报告"
+            },
+            "hba1c": {
+              "value": 6.9,
+              "unit": "%",
+              "date": "2026-01-10",
+              "source": "检验报告"
+            }
+          },
+          "lipid": {
+            "tc": { "value": 5.8, "unit": "mmol/L", "date": "2026-01-10" },
+            "ldl_c": { "value": 3.6, "unit": "mmol/L", "date": "2026-01-10" },
+            "hdl_c": { "value": 0.9, "unit": "mmol/L", "date": "2026-01-10" },
+            "tg": { "value": 2.1, "unit": "mmol/L", "date": "2026-01-10" }
+          }
+        },
+        "history": {
+          "diabetes": true,
+          "stroke": false,
+          "coronary_heart_disease": false,
+          "heart_failure": false,
+          "chronic_kidney_disease": true,
+          "peripheral_vascular_disease": false
+        },
+        "lifestyle": {
+          "smoking": true,
+          "alcohol": false
+        },
+        "missing_flags": {
+          "ecg": true,
+          "echo": true,
+          "carotid_ultrasound": true,
+          "urine_albumin_creatinine_ratio": true,
+          "fundus": false
+        }
+      },
+      "expected_diagnosis": {
+        "diagnosis_status": "completed",
+        "diagnosis": {
+          "is_hypertension": true,
+          "type": "原发性高血压",
+          "grade": "2级"
+        },
+        "risk_assessment": {
+          "risk_level": "高危",
+          "risk_factor_count": 4,
+          "risk_factors": ["年龄≥55岁（男）", "吸烟", "糖尿病", "血脂异常"],
+          "target_organ_damage": ["肾脏损害（eGFR<60）"],
+          "clinical_complications": ["慢性肾病"]
+        },
+        "evidence_summary": [
+          "多次诊室血压 158/96 mmHg，符合2级高血压标准",
+          "正在接受降压治疗（氨氯地平+缬沙坦）",
+          "合并糖尿病（空腹血糖7.2 mmol/L，HbA1c 6.9%）",
+          "肾功能减退（eGFR 58 ml/min/1.73m²，蛋白尿+）",
+          "血脂异常（LDL-C 3.6 mmol/L，HDL-C 0.9 mmol/L）",
+          "吸烟史"
+        ],
+        "missing_data": {
+          "critical": [],
+          "recommended": ["心电图", "超声心动图", "颈动脉超声", "尿白蛋白/肌酐比值"]
+        },
+        "rationale": "根据《中国高血压防治指南（2011修订版）》，该患者为2级高血压，具有4个心血管危险因素（年龄、吸烟、糖尿病、血脂异常），合并靶器官损害（肾脏：eGFR<60）和临床并发症（慢性肾病），符合高危分层标准。"
+      }
+    },
+    {
+      "example_id": "示例2-中危患者",
+      "description": "中年女性，1级高血压，1-2个危险因素",
+      "patient_evidence": {
+        "patient_id": "P202601002",
+        "demographics": {
+          "age": 48,
+          "sex": "female"
+        },
+        "blood_pressure": {
+          "sbp": 145,
+          "dbp": 92,
+          "measurement_type": "clinic",
+          "measurement_times": 3,
+          "date": "2026-01-15",
+          "source": "门诊病历"
+        },
+        "medications": {
+          "antihypertensive": {
+            "on_treatment": false,
+            "classes": [],
+            "drug_names": [],
+            "source": "用药医嘱"
+          }
+        },
+        "lab": {
+          "kidney": {
+            "creatinine": {
+              "value": 78,
+              "unit": "μmol/L",
+              "date": "2026-01-14",
+              "source": "检验报告"
+            },
+            "egfr": {
+              "value": 85,
+              "unit": "ml/min/1.73m2",
+              "date": "2026-01-14",
+              "source": "检验报告"
+            }
+          },
+          "glucose": {
+            "fasting_glucose": {
+              "value": 5.4,
+              "unit": "mmol/L",
+              "date": "2026-01-14",
+              "source": "检验报告"
+            }
+          },
+          "lipid": {
+            "tc": { "value": 5.2, "unit": "mmol/L", "date": "2026-01-14" },
+            "ldl_c": { "value": 3.1, "unit": "mmol/L", "date": "2026-01-14" },
+            "hdl_c": { "value": 1.3, "unit": "mmol/L", "date": "2026-01-14" },
+            "tg": { "value": 1.6, "unit": "mmol/L", "date": "2026-01-14" }
+          }
+        },
+        "history": {
+          "diabetes": false,
+          "stroke": false,
+          "coronary_heart_disease": false,
+          "heart_failure": false,
+          "chronic_kidney_disease": false
+        },
+        "lifestyle": {
+          "smoking": false,
+          "alcohol": false
+        },
+        "target_organ_assessment": {
+          "ecg": {
+            "lvh": false,
+            "date": "2026-01-14",
+            "source": "心电图报告"
+          }
+        },
+        "missing_flags": {
+          "ecg": false,
+          "echo": true,
+          "carotid_ultrasound": true,
+          "urine_albumin_creatinine_ratio": false
+        }
+      },
+      "expected_diagnosis": {
+        "diagnosis_status": "completed",
+        "diagnosis": {
+          "is_hypertension": true,
+          "type": "原发性高血压",
+          "grade": "1级"
+        },
+        "risk_assessment": {
+          "risk_level": "中危",
+          "risk_factor_count": 1,
+          "risk_factors": ["血脂异常（LDL-C 3.1 mmol/L）"],
+          "target_organ_damage": [],
+          "clinical_complications": []
+        },
+        "evidence_summary": [
+          "多次诊室血压 145/92 mmHg，符合1级高血压标准",
+          "未接受降压治疗",
+          "血脂轻度异常（LDL-C 3.1 mmol/L）",
+          "肾功能正常（eGFR 85 ml/min/1.73m²）",
+          "无心电图左心室肥厚证据"
+        ],
+        "missing_data": {
+          "critical": [],
+          "recommended": ["超声心动图", "颈动脉超声"]
+        },
+        "rationale": "根据《中国高血压防治指南（2011修订版）》，该患者为1级高血压，具有1个心血管危险因素（血脂异常，LDL-C>3.0 mmol/L），无靶器官损害和临床并发症，符合中危分层标准。"
+      }
+    },
+    {
+      "example_id": "示例3-很低危患者",
+      "description": "年轻患者，血压正常高值，无其他危险因素",
+      "patient_evidence": {
+        "patient_id": "P202601003",
+        "demographics": {
+          "age": 32,
+          "sex": "male"
+        },
+        "blood_pressure": {
+          "sbp": 132,
+          "dbp": 84,
+          "measurement_type": "clinic",
+          "measurement_times": 3,
+          "date": "2026-01-18",
+          "source": "体检报告"
+        },
+        "medications": {
+          "antihypertensive": {
+            "on_treatment": false,
+            "classes": [],
+            "drug_names": [],
+            "source": "用药医嘱"
+          }
+        },
+        "lab": {
+          "glucose": {
+            "fasting_glucose": {
+              "value": 5.1,
+              "unit": "mmol/L",
+              "date": "2026-01-17",
+              "source": "检验报告"
+            }
+          },
+          "lipid": {
+            "tc": { "value": 4.5, "unit": "mmol/L", "date": "2026-01-17" },
+            "ldl_c": { "value": 2.6, "unit": "mmol/L", "date": "2026-01-17" },
+            "hdl_c": { "value": 1.4, "unit": "mmol/L", "date": "2026-01-17" },
+            "tg": { "value": 1.2, "unit": "mmol/L", "date": "2026-01-17" }
+          }
+        },
+        "history": {
+          "diabetes": false,
+          "stroke": false,
+          "coronary_heart_disease": false,
+          "heart_failure": false,
+          "chronic_kidney_disease": false
+        },
+        "lifestyle": {
+          "smoking": false,
+          "alcohol": false
+        },
+        "missing_flags": {
+          "ecg": true,
+          "echo": true,
+          "carotid_ultrasound": true,
+          "urine_albumin_creatinine_ratio": true
+        }
+      },
+      "expected_diagnosis": {
+        "diagnosis_status": "completed",
+        "diagnosis": {
+          "is_hypertension": false,
+          "type": null,
+          "grade": null
+        },
+        "risk_assessment": {
+          "risk_level": null,
+          "risk_factor_count": 0,
+          "risk_factors": [],
+          "note": "血压处于正常高值范围，建议生活方式干预"
+        },
+        "evidence_summary": [
+          "血压132/84 mmHg，属于正常高值，未达到高血压诊断标准（<140/90 mmHg）",
+          "未接受降压治疗",
+          "无心血管危险因素",
+          "血脂正常（LDL-C 2.6 mmol/L）",
+          "血糖正常"
+        ],
+        "missing_data": {
+          "critical": [],
+          "recommended": ["定期监测血压", "生活方式干预"]
+        },
+        "rationale": "该患者血压132/84 mmHg属于正常高值范围（120-139/80-89 mmHg），未达到高血压诊断标准（≥140/90 mmHg）。建议进行生活方式干预并定期监测血压。"
+      }
+    },
+    {
+      "example_id": "示例4-数据不足",
+      "description": "缺少关键血压数据，无法完成诊断",
+      "patient_evidence": {
+        "patient_id": "P202601004",
+        "demographics": {
+          "age": 45,
+          "sex": "female"
+        },
+        "blood_pressure": {
+          "sbp": null,
+          "dbp": 88,
+          "measurement_type": "clinic",
+          "measurement_times": null,
+          "date": "2026-01-20"
+        },
+        "medications": {
+          "antihypertensive": {
+            "on_treatment": null
+          }
+        },
+        "missing_flags": {
+          "ecg": true,
+          "echo": true
+        }
+      },
+      "expected_diagnosis": {
+        "diagnosis_status": "insufficient_data",
+        "diagnosis": null,
+        "error_message": "关键证据缺失，无法完成诊断",
+        "missing_critical_fields": [
+          "blood_pressure.sbp",
+          "blood_pressure.measurement_times",
+          "medications.antihypertensive.on_treatment"
+        ],
+        "recommendation": "请提供以下必需数据：收缩压（SBP）、血压测量次数、是否正在接受降压治疗"
+      }
+    }
+  ],
+  "usage_notes": {
+    "description": "本示例文件包含不同类型的高血压诊断案例，可作为Skill知识库参考",
+    "guide_reference": "所有诊断均基于《中国高血压防治指南（2011修订版）》",
+    "risk_stratification_rules": {
+      "低危": "1级高血压且无其他危险因素",
+      "中危": "1级高血压伴1-2个危险因素，或2级高血压伴0-2个危险因素",
+      "高危": "1-2级高血压伴≥3个危险因素或靶器官损害，或3级高血压伴0-2个危险因素",
+      "很高危": "任何级别高血压伴临床并发症或糖尿病"
+    },
+ "diagnostic_thresholds": {
+   "hypertension_sbp": 140,
+      "hypertension_dbp": 90,
+      "grade_1_sbp": [140, 159],
+      "grade_1_dbp": [90, 99],
+      "grade_2_sbp": [160, 179],
+      "grade_2_dbp": [100, 109],
+      "grade_3_sbp": [180, null],
+      "grade_3_dbp": [110, null],
+      "risk_factors": {
+        "age_male": 55,
+        "age_female": 65,
+        "ldl_c": 3.0,
+        "hdl_c_male": 1.0,
+        "hdl_c_female": 1.0,
+        "tc": 5.7,
+        "fasting_glucose": 7.0,
+        "egfr": 60
+      }
+    }
+  }
+}

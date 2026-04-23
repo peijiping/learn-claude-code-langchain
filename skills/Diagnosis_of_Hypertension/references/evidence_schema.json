@@ -1,0 +1,431 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Hypertension Diagnosis Evidence Schema",
+  "description": "患者高血压诊断证据数据结构定义",
+  "type": "object",
+  "required": ["patient_id", "demographics", "blood_pressure", "medications", "missing_flags"],
+  "properties": {
+    "patient_id": {
+      "type": "string",
+      "description": "患者唯一标识符"
+    },
+    "demographics": {
+      "type": "object",
+      "required": ["age", "sex"],
+      "description": "人口学信息",
+      "properties": {
+        "age": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 150,
+          "description": "年龄（岁）"
+        },
+        "sex": {
+          "type": "string",
+          "enum": ["male", "female", "男", "女"],
+          "description": "性别"
+        },
+        "date_of_birth": {
+          "type": "string",
+          "format": "date",
+          "description": "出生日期（可选）"
+        }
+      }
+    },
+    "blood_pressure": {
+      "type": "object",
+      "required": ["sbp", "dbp", "measurement_times", "measurement_type"],
+      "description": "血压测量数据",
+      "properties": {
+        "sbp": {
+          "type": "number",
+          "minimum": 50,
+          "maximum": 300,
+          "description": "收缩压（mmHg）"
+        },
+        "dbp": {
+          "type": "number",
+          "minimum": 30,
+          "maximum": 200,
+          "description": "舒张压（mmHg）"
+        },
+        "measurement_type": {
+          "type": "string",
+          "enum": ["clinic", "home", "ambulatory", "诊室", "家庭", "动态"],
+          "description": "测量类型"
+        },
+        "measurement_times": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "测量次数（非同日）"
+        },
+        "date": {
+          "type": "string",
+          "format": "date",
+          "description": "测量日期"
+        },
+        "source": {
+          "type": "string",
+          "description": "数据来源"
+        }
+      }
+    },
+    "medications": {
+      "type": "object",
+      "required": ["antihypertensive"],
+      "description": "用药信息",
+      "properties": {
+        "antihypertensive": {
+          "type": "object",
+          "required": ["on_treatment"],
+          "description": "降压药物治疗",
+          "properties": {
+            "on_treatment": {
+              "type": "boolean",
+              "description": "是否正在接受降压治疗"
+            },
+            "classes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["ACEI", "ARB", "CCB", "利尿剂", "β受体阻滞剂", "其他"]
+              },
+              "description": "药物类别"
+            },
+            "drug_names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "具体药品名称"
+            },
+            "source": {
+              "type": "string",
+              "description": "用药记录来源"
+            }
+          }
+        },
+        "non_antihypertensive_risk_drugs": {
+          "type": "object",
+          "description": "可能升高血压的非降压药物",
+          "properties": {
+            "nsaids": {
+              "type": ["boolean", "null"],
+              "description": "是否使用NSAIDs"
+            },
+            "glucocorticoid": {
+              "type": ["boolean", "null"],
+              "description": "是否使用糖皮质激素"
+            },
+            "oral_contraceptives": {
+              "type": ["boolean", "null"],
+              "description": "是否使用口服避孕药"
+            }
+          }
+        }
+      }
+    },
+    "lab": {
+      "type": "object",
+      "description": "实验室检查结果",
+      "properties": {
+        "kidney": {
+          "type": "object",
+          "description": "肾功能",
+          "properties": {
+            "creatinine": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" },
+                "source": { "type": "string" }
+              }
+            },
+            "egfr": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" },
+                "source": { "type": "string" }
+              }
+            },
+            "urine_protein": {
+              "type": "object",
+              "properties": {
+                "value": { "type": ["string", "number"] },
+                "unit": { "type": ["string", "null"] },
+                "date": { "type": "string", "format": "date" },
+                "source": { "type": "string" }
+              }
+            }
+          }
+        },
+        "glucose": {
+          "type": "object",
+          "description": "血糖",
+          "properties": {
+            "fasting_glucose": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" },
+                "source": { "type": "string" }
+              }
+            },
+            "hba1c": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" },
+                "source": { "type": "string" }
+              }
+            },
+            "postprandial_glucose": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" },
+                "source": { "type": "string" }
+              }
+            }
+          }
+        },
+        "lipid": {
+          "type": "object",
+          "description": "血脂",
+          "properties": {
+            "tc": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" }
+              }
+            },
+            "ldl_c": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" }
+              }
+            },
+            "hdl_c": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" }
+              }
+            },
+            "tg": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" }
+              }
+            }
+          }
+        },
+        "electrolyte": {
+          "type": "object",
+          "description": "电解质",
+          "properties": {
+            "potassium": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" }
+              }
+            },
+            "sodium": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+                "date": { "type": "string", "format": "date" }
+              }
+            }
+          }
+        },
+        "uric_acid": {
+          "type": "object",
+          "properties": {
+            "value": { "type": "number" },
+            "unit": { "type": "string" },
+            "date": { "type": "string", "format": "date" }
+          }
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "description": "病史信息",
+      "properties": {
+        "diabetes": {
+          "type": ["boolean", "null"],
+          "description": "糖尿病"
+        },
+        "stroke": {
+          "type": ["boolean", "null"],
+          "description": "脑卒中"
+        },
+        "coronary_heart_disease": {
+          "type": ["boolean", "null"],
+          "description": "冠心病"
+        },
+        "heart_failure": {
+          "type": ["boolean", "null"],
+          "description": "心力衰竭"
+        },
+        "chronic_kidney_disease": {
+          "type": ["boolean", "null"],
+          "description": "慢性肾病"
+        },
+        "peripheral_vascular_disease": {
+          "type": ["boolean", "null"],
+          "description": "外周血管疾病"
+        },
+        "sleep_apnea": {
+          "type": ["boolean", "null"],
+          "description": "睡眠呼吸暂停"
+        },
+        "family_history_cvd": {
+          "type": ["boolean", "null"],
+          "description": "早发心血管病家族史"
+        }
+      }
+    },
+    "lifestyle": {
+      "type": "object",
+      "description": "生活方式",
+      "properties": {
+        "smoking": {
+          "type": ["boolean", "null"],
+          "description": "吸烟"
+        },
+        "alcohol": {
+          "type": ["boolean", "null"],
+          "description": "饮酒"
+        },
+        "physical_activity": {
+          "type": ["string", "null"],
+          "description": "体力活动水平"
+        },
+        "salt_intake": {
+          "type": ["string", "null"],
+          "description": "盐摄入量"
+        }
+      }
+    },
+    "target_organ_assessment": {
+      "type": "object",
+      "description": "靶器官损害评估",
+      "properties": {
+        "ecg": {
+          "type": "object",
+          "description": "心电图",
+          "properties": {
+            "lvh": {
+              "type": ["boolean", "null"],
+              "description": "左心室肥厚"
+            },
+            "date": { "type": "string", "format": "date" },
+            "source": { "type": "string" }
+          }
+        },
+        "echo": {
+          "type": "object",
+          "description": "超声心动图",
+          "properties": {
+            "lvh": {
+              "type": ["boolean", "null"],
+              "description": "左心室肥厚"
+            },
+            "lvmi": {
+              "type": ["number", "null"],
+              "description": "左心室质量指数"
+            },
+            "date": { "type": "string", "format": "date" },
+            "source": { "type": "string" }
+          }
+        },
+        "carotid_ultrasound": {
+          "type": "object",
+          "description": "颈动脉超声",
+          "properties": {
+            "imt": {
+              "type": ["number", "null"],
+              "description": "内膜中层厚度（mm）"
+            },
+            "plaque": {
+              "type": ["boolean", "null"],
+              "description": "斑块"
+            },
+            "date": { "type": "string", "format": "date" },
+            "source": { "type": "string" }
+          }
+        },
+        "fundus": {
+          "type": "object",
+          "description": "眼底检查",
+          "properties": {
+            "grade": {
+              "type": ["string", "null"],
+              "enum": ["I级", "II级", "III级", "IV级"],
+              "description": "高血压视网膜病变分级"
+            },
+            "date": { "type": "string", "format": "date" },
+            "source": { "type": "string" }
+          }
+        }
+      }
+    },
+    "missing_flags": {
+      "type": "object",
+      "required": [],
+      "description": "缺失检查标记（true表示缺失）",
+      "properties": {
+        "ecg": {
+          "type": "boolean",
+          "description": "心电图"
+        },
+        "echo": {
+          "type": "boolean",
+          "description": "超声心动图"
+        },
+        "carotid_ultrasound": {
+          "type": "boolean",
+          "description": "颈动脉超声"
+        },
+        "urine_albumin_creatinine_ratio": {
+          "type": "boolean",
+          "description": "尿白蛋白/肌酐比值"
+        },
+        "fundus": {
+          "type": "boolean",
+          "description": "眼底检查"
+        },
+        "blood_glucose": {
+          "type": "boolean",
+          "description": "血糖检查"
+        },
+        "lipid_profile": {
+          "type": "boolean",
+          "description": "血脂全套"
+        },
+        "kidney_function": {
+          "type": "boolean",
+          "description": "肾功能"
+        }
+      }
+    }
+  }
+}
