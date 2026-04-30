@@ -11,6 +11,7 @@ tools.py - 工具定义和实现模块
 其他模块可以通过导入此模块来使用这些工具。
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -18,6 +19,8 @@ from skills import SkillLoader
 from task_manager import TaskManager
 from todo_manager import TodoManager
 from background_manager import BackgroundManager
+from teammate_manager import TeammateManager, MessageBus, VALID_MSG_TYPES
+from tools_base import safe_path, run_bash, run_read, run_write, run_edit
 
 
 # 根目录
@@ -29,6 +32,10 @@ SKILLS_DIR = ROOT_DIR / "skills"
 WORKDIR = ROOT_DIR / "WorkSpace"
 # 任务目录
 TASKS_DIR = WORKDIR / ".tasks"
+# 团队目录
+TEAM_DIR = WORKDIR / ".team"
+# 收件箱目录
+INBOX_DIR = TEAM_DIR / ".inbox"
 
 
 
@@ -40,76 +47,10 @@ TODO_MANAGER = TodoManager()
 TASKS = TaskManager(TASKS_DIR)
 # 创建全局 BackgroundManager 实例
 BACKGROUND_MANAGER = BackgroundManager()
-
-
-# ============================================================
-# 工具函数实现区域
-# ============================================================
-
-def safe_path(p: str) -> Path:
-    """验证路径是否在工作目录内，防止路径遍历攻击"""
-    path = (WORKDIR / p).resolve()
-    if not path.is_relative_to(WORKDIR):
-        raise ValueError(f"Path escapes workspace: {p}")
-    return path
-
-
-def run_bash(command: str) -> str:
-    """执行 shell 命令并返回结果"""
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
-    if any(d in command for d in dangerous):
-        return "Error: Dangerous command blocked"
-    try:
-        r = subprocess.run(
-            command,
-            shell=True,
-            cwd=os.getcwd(),
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        out = (r.stdout + r.stderr).strip()
-        if r.returncode != 0:
-            return f"Error: command failed with return code {r.returncode}\n{out}"
-        return out[:50000] if out else "(command executed successfully, no output)"
-    except subprocess.TimeoutExpired:
-        return "Error: Timeout (120s)"
-
-
-def run_read(path: str, limit: int = None) -> str:
-    """读取文件内容"""
-    try:
-        text = safe_path(path).read_text()
-        lines = text.splitlines()
-        if limit and limit < len(lines):
-            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-        return "\n".join(lines)[:50000]
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def run_write(path: str, content: str) -> str:
-    """写入内容到文件"""
-    try:
-        fp = safe_path(path)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text(content)
-        return f"Wrote {len(content)} bytes to {path}"
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def run_edit(path: str, old_text: str, new_text: str) -> str:
-    """替换文件中的指定文本"""
-    try:
-        fp = safe_path(path)
-        content = fp.read_text()
-        if old_text not in content:
-            return f"Error: Text not found in {path}"
-        fp.write_text(content.replace(old_text, new_text, 1))
-        return f"Edited {path}"
-    except Exception as e:
-        return f"Error: {e}"
+# 创建全局 MessageBus 实例
+BUS = MessageBus(INBOX_DIR)
+# 创建全局 TeammateManager 实例
+TEAM = TeammateManager(TEAM_DIR)
 
 
 # ============================================================
@@ -131,6 +72,11 @@ TOOL_HANDLERS = {
     "task_get":    lambda **kw: TASKS.get(kw["task_id"]),
     "background_run":   lambda **kw: BACKGROUND_MANAGER.run(kw["command"]),
     "check_background": lambda **kw: BACKGROUND_MANAGER.check(kw.get("task_id")),
+    "spawn_teammate":   lambda **kw: TEAM.spawn(kw["name"], kw["role"], kw["prompt"]),
+    "list_teammates":   lambda **kw: TEAM.list_all(),
+    "send_message":     lambda **kw: BUS.send("lead", kw["to"], kw["content"], kw.get("msg_type", "message")),
+    "read_inbox":       lambda **kw: json.dumps(BUS.read_inbox("lead"), indent=2),
+    "broadcast":        lambda **kw: BUS.broadcast("lead", kw["content"], TEAM.member_names()),
 }
 
 
@@ -187,6 +133,16 @@ CHILD_TOOLS = [
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
     {"name": "check_background", "description": "Check background task status. Omit task_id to list all.",
      "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}},
+     {"name": "spawn_teammate", "description": "Spawn a persistent teammate that runs in its own thread.",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string"}, "prompt": {"type": "string"}}, "required": ["name", "role", "prompt"]}},
+    {"name": "list_teammates", "description": "List all teammates with name, role, status.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "send_message", "description": "Send a message to a teammate's inbox.",
+     "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "content": {"type": "string"}, "msg_type": {"type": "string", "enum": list(VALID_MSG_TYPES)}}, "required": ["to", "content"]}},
+    {"name": "read_inbox", "description": "Read and drain the lead's inbox.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "broadcast", "description": "Send a message to all teammates.",
+     "input_schema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}},
 ]
 
 # -- Parent tools: base tools + task dispatcher --
