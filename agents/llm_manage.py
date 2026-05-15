@@ -47,6 +47,7 @@ def create_llm(
         base_url=base_url,
         temperature=temperature,
         max_tokens=max_tokens,
+        timeout=1200,
     )
 
 

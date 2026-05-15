@@ -20,155 +20,17 @@ teammate_manager.py - 团队成员管理模块
 """
 
 import json
-import os
-import subprocess
-import time
+from message_bus import MessageBus,VALID_MSG_TYPES
+
 import threading
 from pathlib import Path
-from typing import Optional
 from llm_manage import create_llm_with_tools
 from tools_base import safe_path, run_bash, run_read, run_write, run_edit
 
+
 WORKDIR = Path.cwd() / "WorkSpace"
-
-# 预定义的有效消息类型集合
-# 用于验证消息总线中传输的消息类型是否合法
-VALID_MSG_TYPES = {
-    "message",               # 普通文本消息，点对点发送
-    "broadcast",             # 广播消息，发送给所有团队成员
-    "shutdown_request",     # 关闭请求，请求目标团队成员优雅关闭
-    "shutdown_response",     # 关闭响应，目标对关闭请求的批准/拒绝回复
-    "plan_approval_response", # 计划审批响应，对计划请求的批准/拒绝回复
-}
-
-
-# -- MessageBus: JSONL inbox per teammate --
-class MessageBus:
-    """
-    消息总线类，负责团队成员之间的消息传递
-
-    设计理念：
-    - 每个团队成员拥有独立的 JSONL 收件箱文件（.team/inbox/{name}.jsonl）
-    - 消息以追加模式写入（append-only），保证消息不丢失
-    - 读取收件箱后自动清空文件，实现"消费"语义
-
-    消息格式（JSON对象）：
-    {
-        "type": str,         # 消息类型，取值自 VALID_MSG_TYPES
-        "from": str,         # 发送者名称
-        "content": str,      # 消息内容
-        "timestamp": float,  # 时间戳（从 epoch 开始的秒数）
-        ...extra             # 可选的扩展字段
-    }
-    """
-
-    def __init__(self, inbox_dir: Path):
-        """
-        初始化消息总线
-
-        参数:
-            inbox_dir: 收件箱目录路径，所有成员的收件箱文件将存放于此
-        """
-        self.dir = inbox_dir
-        self.dir.mkdir(parents=True, exist_ok=True)  # 确保目录存在
-
-    def send(self, sender: str, to: str, content: str,
-             msg_type: str = "message", extra: dict = None) -> str:
-        """
-        向指定团队成员发送消息
-
-        参数:
-            sender: 发送者名称
-            to: 接收者名称（目标团队成员）
-            content: 消息内容
-            msg_type: 消息类型，默认为 "message"（普通文本消息）
-            extra: 可选的扩展字段字典，会合并到消息对象中
-
-        返回:
-            str: 操作结果字符串，"Sent {msg_type} to {to}" 或错误信息
-
-        注意:
-            - 消息类型必须为 VALID_MSG_TYPES 中的有效值
-            - 消息以 JSONL 格式追加到接收者的收件箱文件
-        """
-        # 验证消息类型是否合法
-        if msg_type not in VALID_MSG_TYPES:
-            return f"Error: Invalid type '{msg_type}'. Valid: {VALID_MSG_TYPES}"
-
-        # 构造消息对象
-        msg = {
-            "type": msg_type,
-            "from": sender,
-            "content": content,
-            "timestamp": time.time(),  # 记录发送时间戳
-        }
-        # 合并可选的扩展字段
-        if extra:
-            msg.update(extra)
-
-        # 将消息追加写入接收者的收件箱文件
-        inbox_path = self.dir / f"{to}.jsonl"
-        with open(inbox_path, "a") as f:
-            f.write(json.dumps(msg) + "\n")
-
-        return f"Sent {msg_type} to {to}"
-
-    def read_inbox(self, name: str) -> list:
-        """
-        读取并清空指定团队成员的收件箱
-
-        参数:
-            name: 团队成员名称
-
-        返回:
-            list: 消息对象列表，如果收件箱为空或不存在则返回空列表
-
-        注意:
-            - 读取后收件箱文件会被清空，实现"消费"语义
-            - 这是一种"排他性读取"，消息只会被一个消费者处理
-        """
-        inbox_path = self.dir / f"{name}.jsonl"
-
-        # 如果收件箱文件不存在，返回空列表
-        if not inbox_path.exists():
-            return []
-
-        # 读取所有消息行并解析为 JSON 对象
-        messages = []
-        for line in inbox_path.read_text().strip().splitlines():
-            if line:
-                messages.append(json.loads(line))
-
-        # 清空收件箱文件
-        inbox_path.write_text("")
-
-        return messages
-
-    def broadcast(self, sender: str, content: str, teammates: list) -> str:
-        """
-        向所有团队成员广播消息
-
-        参数:
-            sender: 发送者名称
-            content: 消息内容
-            teammates: 团队成员名称列表
-
-        返回:
-            str: 广播结果字符串，格式为 "Broadcast to {count} teammates"
-
-        注意:
-            - 广播消息使用 "broadcast" 类型
-            - 发送者不会收到自己发送的广播消息
-        """
-        count = 0
-        for name in teammates:
-            # 排除发送者自己
-            if name != sender:
-                self.send(sender, name, content, "broadcast")
-                count += 1
-        return f"Broadcast to {count} teammates"
-
-
+TEAM_DIR = WORKDIR / ".team"
+INBOX_DIR = WORKDIR / ".inbox"
 # -- TeammateManager: persistent named agents with config.json --
 class TeammateManager:
     """
@@ -199,6 +61,9 @@ class TeammateManager:
         self.config_path = self.dir / "config.json"  # 团队配置文件路径
         self.config = self._load_config()  # 加载团队配置
         self.threads = {}  # 存储团队成员对应的线程对象 {name: Thread}
+        # 初始化消息总线
+        # 每个团队成员拥有独立的 JSONL 收件箱文件（./inbox/{name}.jsonl）
+        self.bus = MessageBus(INBOX_DIR)
 
 
     def _load_config(self) -> dict:
@@ -263,11 +128,12 @@ class TeammateManager:
         member = self._find_member(name)
 
         if member:
-            # 成员已存在，检查其当前状态
-            if member["status"] not in ("idle", "shutdown"):
-                # 成员正忙，无法重新创建
-                return f"Error: '{name}' is currently {member['status']}"
-            # 重新激活成员：更新角色和状态
+            # 检查成员是否真的有活跃线程在运行
+            thread = self.threads.get(name)
+            if thread and thread.is_alive():
+                # 线程真实存在且正在运行，拒绝重新创建
+                return f"Error: '{name}' is currently {member['status']} (thread active)"
+            # 线程已不存在或已结束（如程序重启后 config 残留 "working" 状态），允许重新激活
             member["status"] = "working"
             member["role"] = role
         else:
@@ -310,7 +176,13 @@ class TeammateManager:
         # 构建成员的系统提示词
         sys_prompt = (
             f"You are '{name}', role: {role}, at {WORKDIR}. "
-            f"Use send_message to communicate. Complete your task."
+            f"Use send_message to communicate. Complete your task.\n\n"
+            f"## Shutdown Protocol\n"
+            f"When you receive a message with type 'shutdown_request', you MUST respond immediately:\n"
+            f"1. Call send_message with msg_type='shutdown_response' to 'lead'\n"
+            f"2. Include the request_id from the shutdown_request message in the extra field\n"
+            f"3. Set approve=true in the extra field\n"
+            f"4. Then stop all work and end your task."
         )
 
         # 初始化消息历史，以初始任务描述作为首条用户消息
@@ -323,12 +195,30 @@ class TeammateManager:
         llm_with_tools = create_llm_with_tools(tools)
 
         # 代理循环，最多执行 50 轮
+        max_consecutive_empty_inbox = 3  # 连续空收件箱阈值，超过则退出循环
+        consecutive_empty_count = 0  # 连续空收件箱计数器
+        shutdown_received = False  # 是否收到关闭请求
+
         for _ in range(50):
             # 步骤1：检查收件箱，获取所有待处理消息
-            inbox = BUS.read_inbox(name)
+            inbox = self.bus.read_inbox(name)
             for msg in inbox:
+                # 检查是否收到关闭请求
+                if msg.get("type") == "shutdown_request":
+                    shutdown_received = True
                 # 将每条消息作为用户消息添加到历史
                 messages.append({"role": "user", "content": json.dumps(msg)})
+
+            # 如果收件箱有消息，重置连续空收件箱计数器
+            if inbox:
+                consecutive_empty_count = 0
+            else:
+                # 收件箱为空，增加计数器
+                consecutive_empty_count += 1
+                # 如果连续空收件箱次数超过阈值，且LLM之前选择了不调用工具或只有空输出，则退出
+                if consecutive_empty_count >= max_consecutive_empty_inbox:
+                    print(f"  [{name}] 收件箱连续为空，退出循环")
+                    break
 
             try:
                 # 步骤2：调用 LLM 进行推理
@@ -344,14 +234,22 @@ class TeammateManager:
             if not hasattr(response, "tool_calls") or not response.tool_calls:
                 # LLM 选择不调用工具，对话结束
                 break
+
             # 步骤4：执行所有工具调用
             results = []
+            has_meaningful_output = False  # 标记是否有意义的输出
             for tool_call in response.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
                 tool_id = tool_call["id"]
                 output = self._exec(name, tool_name, tool_args)
                 print(f"  [{name}] {tool_name}: {str(output)[:120]}")
+
+                # 检查输出是否有意义（非空、非错误）
+                output_str = str(output).strip()
+                if output_str and not output_str.startswith("Error:") and output_str not in ("()", "[]", "None"):
+                    has_meaningful_output = True
+
                 results.append({
                     "type": "tool_result",
                     "tool_call_id": tool_id,
@@ -361,10 +259,17 @@ class TeammateManager:
             # 将工具执行结果作为用户消息添加回对话
             messages.append({"role": "user", "content": json.dumps(results)})
 
-        # 循环结束，更新成员状态为 idle（除非已关闭）
+            # 如果连续空收件箱但有有意义的输出，重置计数器
+            if consecutive_empty_count > 0 and has_meaningful_output:
+                consecutive_empty_count = 0
+
+        # 循环结束，更新成员状态
         member = self._find_member(name)
-        if member and member["status"] != "shutdown":
-            member["status"] = "idle"
+        if member:
+            if shutdown_received:
+                member["status"] = "shutdown"
+            elif member["status"] != "shutdown":
+                member["status"] = "idle"
             self._save_config()
 
     def _exec(self, sender: str, tool_name: str, args: dict) -> str:
@@ -405,11 +310,11 @@ class TeammateManager:
 
         # send_message: 发送消息给团队成员
         if tool_name == "send_message":
-            return BUS.send(sender, args["to"], args["content"], args.get("msg_type", "message"))
+            return self.bus.send(sender, args["to"], args["content"], args.get("msg_type", "message"))
 
         # read_inbox: 读取并清空自己的收件箱
         if tool_name == "read_inbox":
-            return json.dumps(BUS.read_inbox(sender), indent=2)
+            return json.dumps(self.bus.read_inbox(sender), indent=2)
 
         # 未知工具
         return f"Unknown tool: {tool_name}"
@@ -524,8 +429,17 @@ class TeammateManager:
         """
         return [m["name"] for m in self.config["members"]]
 
+    def _update_member_status(self, name: str, status: str) -> None:
+        """
+        更新指定团队成员的状态并保存配置
 
-TEAM_DIR = WORKDIR / ".team"
-INBOX_DIR = TEAM_DIR / ".inbox"
-BUS = MessageBus(INBOX_DIR)
-TEAM = TeammateManager(TEAM_DIR)
+        参数:
+            name: 成员名称
+            status: 新状态 (working/idle/shutdown)
+        """
+        member = self._find_member(name)
+        if member:
+            member["status"] = status
+            self._save_config()
+
+
