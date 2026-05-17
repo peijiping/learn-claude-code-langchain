@@ -215,7 +215,7 @@ TOOL_HANDLERS = {
 
 # 定义工具的 JSON Schema（描述工具的名称、参数等）
 # 该工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
-CHILD_TOOLS = [
+TOOLS = [
     {
         "name": "bash","description": "执行 shell 命令。",
         "input_schema": {"type": "object","properties": {"command": {"type": "string"}},"required": ["command"]}
@@ -270,13 +270,68 @@ CHILD_TOOLS = [
      "input_schema": {"type": "object", "properties": {"request_id": {"type": "string"}, "approve": {"type": "boolean"}, "feedback": {"type": "string"}}, "required": ["request_id", "approve"]}},
 ]
 
+
+
+# 子智能体的工具描述，工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
+CHILD_TOOLS_SUBAGENT = [
+    {
+        "name": "bash","description": "执行 shell 命令。",
+        "input_schema": {"type": "object","properties": {"command": {"type": "string"}},"required": ["command"]}
+    },
+    {
+        "name": "read_file","description": "读取文件内容。",
+        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},"required": ["path"]}
+    },
+    {
+        "name": "write_file","description": "将内容写入文件。",
+        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "content": {"type": "string"}},"required": ["path", "content"]}
+    },
+    {
+        "name": "edit_file","description": "替换文件中指定的文本内容。",
+        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},"required": ["path", "old_text", "new_text"]}
+    },
+    {
+        "name": "load_skill", "description": "加载指定名称的专业技能（skill）知识。",
+        "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "要加载的专业技能（skill）名称"}}, "required": ["name"]}
+    },
+    {
+        "name": "task_create", "description": "创建一个新任务。",
+        "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "description": {"type": "string"}}, "required": ["subject"]}
+    },
+    {
+        "name": "task_update", "description": "更新任务的状态或依赖关系。",
+        "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}, "addBlockedBy": {"type": "array", "items": {"type": "integer"}}, "addBlocks": {"type": "array", "items": {"type": "integer"}}}, "required": ["task_id"]}
+    },
+    {
+        "name": "task_list", "description": "列出所有任务及其状态摘要。",
+        "input_schema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "task_get", "description": "根据ID获取任务的完整详情。",
+        "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}
+    },
+    {
+        "name": "background_run", "description": "在后台线程中运行命令，立即返回task_id。",
+        "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+    },
+    {
+        "name": "check_background", "description": "检查后台任务状态，省略task_id以列出所有任务。",
+        "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}
+    },
+    
+]
+
 # -- Parent tools: base tools + task dispatcher --
-PARENT_TOOLS = CHILD_TOOLS + [
+PARENT_TOOLS = CHILD_TOOLS_SUBAGENT + [
     {"name": "sub_agent",
-     "description": "分发子任务给子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。",
+     "description": "分发子任务给子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。",
      "input_schema": {
         "type": "object",
-        "properties": {"prompt": {"type": "string", "description": "给子智能体的任务描述，应具体说明要做什么"}, "description": {"type": "string", "description": "任务的简短描述，用于日志记录"}},
-        "required": ["prompt"]}
+        "properties": {
+            "prompt": {"type": "string", "description": "给子智能体的任务描述，应具体说明要做什么"},
+            "description": {"type": "string", "description": "任务的简短描述，用于日志记录"},
+            "parallel": {"type": "boolean", "enum": ["true", "false"], "description": "值为true、false，是否与其他 sub_agent 并行执行。"}
+        },
+        "required": ["prompt","parallel"]}
     }
 ]

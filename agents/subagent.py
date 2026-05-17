@@ -10,7 +10,7 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from llm_manage import create_llm_with_tools
-from tools import CHILD_TOOLS, TOOL_HANDLERS, WORKDIR
+from tools import TOOLS, TOOL_HANDLERS, WORKDIR
 
 SUBAGENT_SYSTEM = f"You are a coding subagent at {WORKDIR}. Complete the given task, then summarize your findings."
 
@@ -33,7 +33,7 @@ def run_subagent(prompt: str) -> str:
     """
     sub_messages = [SystemMessage(content=SUBAGENT_SYSTEM)]
     sub_messages.append(HumanMessage(content=prompt))
-    sub_llm_with_tools = create_llm_with_tools(CHILD_TOOLS)
+    sub_llm_with_tools = create_llm_with_tools(TOOLS)
     for _ in range(30):
         sub_response = sub_llm_with_tools.invoke(sub_messages)
         sub_messages.append(sub_response)

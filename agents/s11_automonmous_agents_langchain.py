@@ -55,7 +55,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from session_manage import SessionManager
 from subagent import run_subagent
-from tools import PARENT_TOOLS, TOOL_HANDLERS, WORKDIR, SKILL_LOADER, BACKGROUND_MANAGER, BUS, TEAM, TASKS_DIR
+from tools import TOOLS, TOOL_HANDLERS, WORKDIR, SKILL_LOADER, BACKGROUND_MANAGER, BUS, TEAM, TASKS_DIR
 from llm_manage import create_llm_with_tools
 
 # 加载环境变量
@@ -99,7 +99,7 @@ Skills available：
 {SKILL_LOADER.get_descriptions()}
 """
 # 创建绑定了工具的 LLM 实例
-llm_with_tools = create_llm_with_tools(PARENT_TOOLS)
+llm_with_tools = create_llm_with_tools(TOOLS)
 
 
 # 最大智能体循环迭代次数，防止无限循环导致程序卡死
