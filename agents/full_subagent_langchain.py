@@ -26,6 +26,29 @@ CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 SYSTEM = f"""
 你是一个专业的编程助手，工作目录是 {WORKDIR}，所有操作仅限在该目录下进行。
 请优先读取根目录下的CLAUDE.md或者AGENT.md来了解项目约束。
+遇到复杂问题时可以先生成shell脚本或者python脚本，再执行。
+
+## 上下文保护规则（最高优先级）
+- 你有一个有限的上下文窗口，每次工具调用的输出都会消耗它。一旦耗尽，对话将无法继续
+- **永远不要**对二进制文件（PDF、图片、压缩包等）使用 strings、cat、hexdump 命令
+- **永远不要**一次性读取超过 500 行的文件，始终使用 limit 参数或 | head 控制
+- **永远不要**让单次工具输出超过 5000 字符进入上下文，使用 | head -100 或 | tail 控制
+- 读取 PDF 文件时，**必须**使用 read_pdf 工具，不要使用 bash 命令
+- 当需要读取大量文件时，**必须**使用 sub_agent 来隔离上下文
+
+## sub_agent 强制使用场景
+以下场景**必须**使用 sub_agent，不得在主对话中直接执行：
+1. 需要读取 3 个以上文件时
+2. 需要读取 PDF 文件时
+3. 需要执行 5 步以上工具调用时
+4. 需要搜索/探索代码库或文档时
+5. 需要实现具体功能时
+6. 需要设计实现方案时
+
+## sub_agent 工具范围控制
+- 子智能体默认拥有全部工具权限，通过 prompt 描述引导其行为
+- 如需限制为只读操作，设置 allowed_tools=["bash","read_file","read_pdf"]
+- 例如搜索信息、读取文档时，可限制工具范围避免误写
 
 ## 工具并行执行说明
 - 所有工具（包括 sub_agent 和普通工具）都支持 `parallel` 参数。
@@ -34,14 +57,19 @@ SYSTEM = f"""
 - 注意：并行执行时，请确保工具之间**没有写冲突**。例如不要在同一轮中同时 `write_file` 或 `edit_file` 同一个文件。
 - 推荐做法：将相互依赖的操作设为 `parallel=false` 分先后执行，将独立的读操作设为 `parallel=true` 并行执行。
 
-## sub_agent 使用时机，当子任务满足以下任一条件时，主动使用 sub_agent 分发：
-- 需要读取多个文件探索或收集信息时
-- 需要多次工具调用或答案相对独立，就使用 sub_agent。
-- 可能产生大量工具调用，会污染主对话上下文时。
-- 并行能大幅提升效率，但仅限任务相互独立时使用。
-## sub_agent 使用时机例举
+## sub_agent 使用例举
 - 例如「同时搜索3个不同的目录」→ 3 个 sub_agent 都设 `parallel=true`
+- 例如「读取 DRG_Docs 目录下所有 PDF 的标题和摘要」→ sub_agent(parallel="true")
 - 例如「先分析API文档，再根据结果写前端」→ 第二个依赖第一个，设 `parallel=false`（默认串行）
+- 例如「实现用户注册功能」→ sub_agent(parallel="false")
+- 例如「只读方式搜索代码中的安全问题」→ sub_agent(allowed_tools=["bash","read_file","read_pdf"], parallel="true")
+
+## 工作流程规范
+面对复杂任务时，按以下流程执行：
+1. **规划**：先在主对话中制定计划（不执行任何工具）
+2. **分发**：将计划中的子任务分发给子智能体
+3. **汇总**：收集子智能体结果，在主对话中综合分析
+4. **决策**：需要用户确认的决策，在主对话中提出
 
 Skills 可使用列表：
 {SKILL_LOADER.get_descriptions()}
@@ -61,9 +89,10 @@ def _execute_tool_call(tool_call: dict) -> dict:
     tool_id = tool_call["id"]
 
     if tool_name == "sub_agent":
+        allowed_tools = tool_args.get("allowed_tools")
         print(f">> sub_agent ({tool_args.get('description', '')}): {tool_args['prompt'][:80]}")
-        tool_output = run_subagent(tool_args["prompt"])
-        print(f">> sub_agent 执行结果: {tool_output}")
+        tool_output = run_subagent(tool_args["prompt"], allowed_tools=allowed_tools)
+        print(f">> sub_agent 执行结果: {tool_output[:200]}...")
     elif tool_name in TOOL_HANDLERS:
         print(f">> 工具 {tool_name}({tool_args})")
         tool_output = TOOL_HANDLERS[tool_name](**tool_args)
@@ -184,15 +213,6 @@ def main():
             print(f"\033[33m已清空当前会话，删除了 {deleted_count} 条历史消息\033[0m")
             continue
         
-        # 团队命令
-        if query.strip() == "/team":
-            print(TEAM.list_all())
-            continue
-        # 收件箱命令
-        if query.strip() == "/inbox":
-            print(json.dumps(BUS.read_inbox("lead"), indent=2))
-            continue
-
         if query.strip() == "/tasks":
             TASKS_DIR.mkdir(exist_ok=True)
             for f in sorted(TASKS_DIR.glob("task_*.json")):

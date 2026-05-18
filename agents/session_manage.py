@@ -30,10 +30,11 @@ class SessionManager:
     SAFE_TOKEN_THRESHOLD = int(MAX_CONTEXT_TOKENS * 0.95)  # 约 186777 tokens
     
     # 工具消息压缩配置
-    # 工具消息长度阈值，超过此值会被压缩（字符数）
     TOOL_MESSAGE_THRESHOLD = 2000
     # 保留最近的对话轮数，这些消息不会被压缩
     PRESERVE_RECENT_ROUNDS = 5
+    # HumanMessage 中工具结果的输出截断长度
+    TOOL_OUTPUT_MAX_LENGTH = 500
     
     def __init__(self, chat_history_dir: Path, system_prompt: str):
         """
@@ -163,6 +164,47 @@ class SessionManager:
         
         return trimmed
     
+    def _compress_human_tool_result(self, msg: HumanMessage) -> HumanMessage:
+        """
+        压缩 HumanMessage 中的工具调用结果
+
+        当工具结果以 HumanMessage 形式存储时（如 json.dumps(tool_call_results)），
+        检测并压缩其中过长的 tool_output 字段，防止上下文被撑爆。
+
+        Args:
+            msg: 可能包含工具结果的 HumanMessage
+
+        Returns:
+            HumanMessage: 压缩后的消息（如果无需压缩则返回原消息）
+        """
+        content = msg.content
+        if not isinstance(content, str):
+            return msg
+        if len(content) <= self.TOOL_MESSAGE_THRESHOLD:
+            return msg
+        if not content.startswith('[{') or '"tool_result"' not in content:
+            return msg
+
+        try:
+            results = json.loads(content)
+            if not isinstance(results, list):
+                return msg
+
+            changed = False
+            for r in results:
+                if not isinstance(r, dict) or "tool_output" not in r:
+                    continue
+                output = r["tool_output"]
+                if isinstance(output, str) and len(output) > self.TOOL_OUTPUT_MAX_LENGTH:
+                    r["tool_output"] = output[:self.TOOL_OUTPUT_MAX_LENGTH] + f"... [已截断，原始 {len(output)} 字符]"
+                    changed = True
+
+            if changed:
+                return HumanMessage(content=json.dumps(results, ensure_ascii=False))
+            return msg
+        except (json.JSONDecodeError, TypeError, KeyError):
+            return msg
+
     def trim_messages_with_tool_compression(
         self,
         messages: list
@@ -231,11 +273,10 @@ class SessionManager:
         compressed_count = 0
         saved_tokens = 0
         
-        # 对可压缩区域内的工具消息进行占位符替换
+        # 对可压缩区域内的消息进行压缩
         processed_compressible = []
         for msg in compressible_messages:
             if isinstance(msg, ToolMessage) and len(msg.content) > self.TOOL_MESSAGE_THRESHOLD:
-                # 获取工具名称（从 tool_call_id 中提取或使用默认值）
                 tool_name = msg.tool_call_id if msg.tool_call_id else "tool"
                 placeholder = f"[{tool_name} 执行结果已压缩]"
                 saved_tokens += self.estimate_tokens([msg]) - self.estimate_tokens([ToolMessage(content=placeholder, tool_call_id=msg.tool_call_id)])
@@ -244,6 +285,12 @@ class SessionManager:
                     content=placeholder,
                     tool_call_id=msg.tool_call_id
                 ))
+            elif isinstance(msg, HumanMessage):
+                compressed_msg = self._compress_human_tool_result(msg)
+                if compressed_msg is not msg:
+                    compressed_count += 1
+                    saved_tokens += self.estimate_tokens([msg]) - self.estimate_tokens([compressed_msg])
+                processed_compressible.append(compressed_msg)
             else:
                 processed_compressible.append(msg)
         

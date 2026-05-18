@@ -10,6 +10,13 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "Python Debugger: Full Subagent Langchain",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/agents/full_subagent_langchain.py",
+            "console": "integratedTerminal"
         }
     ]
 }

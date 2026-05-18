@@ -71,6 +71,36 @@ def safe_path(p: str) -> Path:
 # Bash命令执行函数
 # =============================================================================
 
+def _is_binary_content(text: str) -> bool:
+    """检测输出是否包含大量二进制垃圾数据"""
+    if not text or len(text) < 100:
+        return False
+    sample = text[:2000]
+    printable = sum(1 for c in sample if c.isprintable() or c in '\n\r\t')
+    if (len(sample) - printable) / len(sample) > 0.3:
+        return True
+    binary_patterns = [
+        'endobj', 'endstream', '/FontDescriptor', '/CIDToGIDMap',
+        '/Type /Font', '/Subtype /CIDFont', '/BaseFont /',
+        '0 obj<<', '/FontFile2', '/ToUnicode',
+    ]
+    pattern_hits = sum(1 for p in binary_patterns if p in sample)
+    if pattern_hits >= 2:
+        return True
+    return False
+
+
+def _smart_truncate(text: str, max_chars: int = 10000) -> str:
+    """智能截断：保留首尾，中间用省略标记替代"""
+    if len(text) <= max_chars:
+        return text
+    head_size = max_chars // 2
+    tail_size = max_chars // 4
+    head = text[:head_size]
+    tail = text[-tail_size:]
+    return f"{head}\n\n... [输出已截断，共 {len(text)} 字符，保留首 {head_size} + 尾 {tail_size} 字符] ...\n\n{tail}"
+
+
 def run_bash(command: str) -> str:
     """
     执行shell命令并返回结果
@@ -89,38 +119,30 @@ def run_bash(command: str) -> str:
         超时：返回 "Error: Timeout (120s)"
         危险命令：返回 "Error: Dangerous command blocked"
     """
-    # 危险命令黑名单：这些命令可能被误用造成系统损坏
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
 
-    # 执行黑名单检查，防止危险操作
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
 
     try:
-        # 使用 subprocess.run 执行命令
-        # shell=True: 使用shell解释器执行，适合复杂命令
-        # capture_output=True: 捕获stdout和stderr
-        # text=True: 返回字符串而非字节
-        # timeout=120: 120秒超时保护
         r = subprocess.run(
             command,
             shell=True,
-            cwd=os.getcwd(),  # 在当前工作目录执行
+            cwd=os.getcwd(),
             capture_output=True,
             text=True,
             timeout=120
         )
 
-        # 合并stdout和stderr输出
         out = (r.stdout + r.stderr).strip()
 
-        # 检查返回码，非0表示命令执行失败
-        if r.returncode != 0:
-            return f"Error: command failed with return code {r.returncode}\n{out}"
+        if _is_binary_content(out):
+            return "Error: 输出包含大量二进制数据，请使用专用工具（如 pymupdf 读取 PDF）而非 strings/cat/hexdump 等原始命令。"
 
-        # 成功执行：返回输出内容，截断至50000字符
-        # 如果没有输出，返回成功提示
-        return out[:50000] if out else "(command executed successfully, no output)"
+        if r.returncode != 0:
+            return f"Error: command failed with return code {r.returncode}\n{_smart_truncate(out, 10000)}"
+
+        return _smart_truncate(out, 10000) if out else "(command executed successfully, no output)"
 
     except subprocess.TimeoutExpired:
         # 命令执行超时（超过120秒）
@@ -165,7 +187,64 @@ def run_read(path: str, limit: int = None) -> str:
         return "\n".join(lines)[:50000]
 
     except Exception as e:
-        # 捕获所有异常（文件不存在、权限不足等）
+        return f"Error: {e}"
+
+
+# =============================================================================
+# PDF 读取函数
+# =============================================================================
+
+def run_read_pdf(path: str, max_pages: int = 5, chars_per_page: int = 3000) -> str:
+    """
+    使用 pymupdf 安全读取 PDF 文件，分页提取文本
+
+    功能特性：
+    - 使用 safe_path 进行安全路径验证
+    - 分页提取，每页限制字符数
+    - 限制最大读取页数
+    - 总输出截断至 30000 字符
+
+    参数：
+        path: PDF 文件路径（相对路径）
+        max_pages: 最大读取页数，默认5页
+        chars_per_page: 每页最大字符数，默认3000
+
+    返回：
+        成功：PDF 文本内容
+        失败：格式 "Error: {异常信息}"
+    """
+    try:
+        fp = safe_path(path)
+        if not fp.exists():
+            return f"Error: File not found: {path}"
+        if not str(fp).lower().endswith('.pdf'):
+            return f"Error: Not a PDF file: {path}"
+
+        try:
+            import fitz
+        except ImportError:
+            return "Error: pymupdf 未安装。请运行: python3 -m pip install pymupdf"
+
+        doc = fitz.open(str(fp))
+        total_pages = len(doc)
+        results = [f"PDF: {path}, 总页数: {total_pages}"]
+
+        read_pages = min(max_pages, total_pages)
+        for i in range(read_pages):
+            text = doc[i].get_text().strip()
+            if text:
+                results.append(f"--- 第 {i+1} 页 ---")
+                results.append(text[:chars_per_page])
+            else:
+                results.append(f"--- 第 {i+1} 页 --- (无可提取文本，可能为扫描件)")
+
+        if total_pages > read_pages:
+            results.append(f"... (还有 {total_pages - read_pages} 页未读取，可增大 max_pages 参数)")
+
+        doc.close()
+        return "\n".join(results)[:30000]
+
+    except Exception as e:
         return f"Error: {e}"
 
 

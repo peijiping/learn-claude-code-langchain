@@ -21,7 +21,7 @@ from task_manager import TaskManager
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
 from message_bus import MessageBus, VALID_MSG_TYPES
-from tools_base import safe_path, run_bash, run_read, run_write, run_edit
+from tools_base import safe_path, run_bash, run_read, run_read_pdf, run_write, run_edit
 
 
 # 根目录
@@ -188,6 +188,7 @@ def _check_shutdown_status(request_id: str) -> str:
 TOOL_HANDLERS = {
     "bash":       lambda **kw: run_bash(kw["command"]),
     "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
+    "read_pdf":   lambda **kw: run_read_pdf(kw["path"], kw.get("max_pages", 5), kw.get("chars_per_page", 3000)),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     # "todo":       lambda **kw: TODO_MANAGER.update(kw["items"]),
@@ -223,6 +224,10 @@ TOOLS = [
     {
         "name": "read_file","description": "读取文件内容。",
         "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},"required": ["path"]}
+    },
+    {
+        "name": "read_pdf","description": "使用 pymupdf 安全读取 PDF 文件，分页提取文本。读取 PDF 时必须使用此工具，不要使用 bash 的 strings/cat 等命令。",
+        "input_schema": {"type": "object","properties": {"path": {"type": "string","description": "PDF 文件路径"},"max_pages": {"type": "integer","description": "最大读取页数，默认5"},"chars_per_page": {"type": "integer","description": "每页最大字符数，默认3000"}},"required": ["path"]}
     },
     {
         "name": "write_file","description": "将内容写入文件。",
@@ -283,6 +288,10 @@ CHILD_TOOLS_SUBAGENT = [
         "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},"required": ["path"]}
     },
     {
+        "name": "read_pdf","description": "使用 pymupdf 安全读取 PDF 文件，分页提取文本。读取 PDF 时必须使用此工具，不要使用 bash 的 strings/cat 等命令。",
+        "input_schema": {"type": "object","properties": {"path": {"type": "string","description": "PDF 文件路径"},"max_pages": {"type": "integer","description": "最大读取页数，默认5"},"chars_per_page": {"type": "integer","description": "每页最大字符数，默认3000"}},"required": ["path"]}
+    },
+    {
         "name": "write_file","description": "将内容写入文件。",
         "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "content": {"type": "string"}},"required": ["path", "content"]}
     },
@@ -324,12 +333,13 @@ CHILD_TOOLS_SUBAGENT = [
 # -- Parent tools: base tools + task dispatcher --
 PARENT_TOOLS = CHILD_TOOLS_SUBAGENT + [
     {"name": "sub_agent",
-     "description": "分发子任务给子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。",
+     "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有全部工具权限，通过 prompt 描述引导其行为。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下所有 PDF 的标题和摘要\", parallel=\"true\")\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")",
      "input_schema": {
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "给子智能体的任务描述，应具体说明要做什么"},
             "description": {"type": "string", "description": "任务的简短描述，用于日志记录"},
+            "allowed_tools": {"type": "array", "items": {"type": "string"}, "description": "限制子智能体可用的工具名称列表。不设置则默认使用全部工具。例如 [\"bash\",\"read_file\",\"read_pdf\"] 限制为只读工具集"},
             "parallel": {"type": "boolean", "enum": ["true", "false"], "description": "值为true、false，是否与其他 sub_agent 并行执行。"}
         },
         "required": ["prompt","parallel"]}
