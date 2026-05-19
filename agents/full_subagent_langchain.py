@@ -6,7 +6,7 @@
 import json
 import os
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
@@ -230,10 +230,8 @@ def main():
             break
         
         if query.strip().lower() == "@newsession":
-            session_num, session_file = session_manager.create_new_session()
+            session_num, session_file, history_messages = session_manager.create_initialized_session()
             set_todo_session(session_num)
-            history_messages = [SystemMessage(content=SYSTEM)]
-            session_manager.append_message_to_session(session_file, history_messages[0])
             print(f"\033[33m已创建新会话: session_{session_num}.jsonl\033[0m")
             continue
         
@@ -251,7 +249,7 @@ def main():
         
         if query.strip().lower() == "@clearsession":
             deleted_count = session_manager.clear_session(session_file)
-            history_messages = [SystemMessage(content=SYSTEM)]
+            history_messages = session_manager.load_session_history(session_file)
             print(f"\033[33m已清空当前会话，删除了 {deleted_count} 条历史消息\033[0m")
             continue
         

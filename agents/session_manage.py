@@ -23,6 +23,8 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 
 class SessionManager:
     """会话管理器，负责对话历史的持久化存储和管理"""
+
+    WORKSPACE_INSTRUCTION_FILES = ("CLAUDE.md", "AGENT.md")
     
     # 上下文窗口最大 token 数 (192K = 196608 tokens，与 API 限制一致)
     MAX_CONTEXT_TOKENS = 196608
@@ -424,6 +426,60 @@ class SessionManager:
                 f.write(json.dumps(msg_data, ensure_ascii=False) + "\n")
         except Exception as e:
             print(f"写入会话历史失败: {e}")
+
+    def _build_workspace_instruction_message(self) -> Optional[HumanMessage]:
+        """
+        读取 workspace 根目录下的指令文件，并构造为一条 HumanMessage。
+
+        文件读取顺序固定为 CLAUDE.md -> AGENT.md。只检查 workspace 根目录，
+        不递归子目录。
+        """
+        workspace_dir = self.chat_history_dir.parent
+        sections = []
+
+        for filename in self.WORKSPACE_INSTRUCTION_FILES:
+            instruction_file = workspace_dir / filename
+            if not instruction_file.is_file():
+                continue
+
+            try:
+                content = instruction_file.read_text(encoding="utf-8")
+            except Exception as e:
+                print(f"读取 workspace 指令文件失败: {instruction_file}: {e}")
+                continue
+
+            sections.append(f"以下是 workspace/{filename} 内容：\n\n{content}")
+
+        if not sections:
+            return None
+
+        return HumanMessage(content="\n\n".join(sections))
+
+    def _build_initial_messages(self) -> list:
+        """
+        构造新会话的初始消息。
+
+        始终第一条为 SystemMessage；如果 workspace 根目录存在 CLAUDE.md
+        或 AGENT.md，则追加一条 HumanMessage 承载这些文件内容。
+        """
+        messages = [SystemMessage(content=self.system_prompt)]
+        workspace_instruction_msg = self._build_workspace_instruction_message()
+        if workspace_instruction_msg is not None:
+            messages.append(workspace_instruction_msg)
+        return messages
+
+    def create_initialized_session(self) -> tuple[int, Path, list]:
+        """
+        创建新会话并写入完整初始消息。
+
+        Returns:
+            (新会话编号, 新会话文件路径, 初始消息列表)
+        """
+        new_num, new_file = self.create_new_session()
+        messages = self._build_initial_messages()
+        for message in messages:
+            self.append_message_to_session(new_file, message)
+        return new_num, new_file, messages
     
     def create_new_session(self) -> tuple[int, Path]:
         """
@@ -453,9 +509,7 @@ class SessionManager:
                 print(f"已加载会话: session_{max_num}.jsonl ({len(messages)} 条消息)")
                 return max_num, session_file, messages
         
-        new_num, new_file = self.create_new_session()
-        messages = [SystemMessage(content=self.system_prompt)]
-        self.append_message_to_session(new_file, messages[0])
+        new_num, new_file, messages = self.create_initialized_session()
         print(f"已创建新会话: session_{new_num}.jsonl")
         return new_num, new_file, messages
     
@@ -519,18 +573,15 @@ class SessionManager:
         messages = self.load_session_history(session_file)
         deleted_count = len(messages)
         
-        # 清空文件并重新写入系统提示词
+        # 清空文件并重新写入初始消息
         try:
             with open(session_file, "w", encoding="utf-8") as f:
-                # 写入系统提示词
-                system_msg = SystemMessage(content=self.system_prompt)
-                msg_data = {
-                    "type": "system",
-                    "content": system_msg.content
-                }
-                f.write(json.dumps(msg_data, ensure_ascii=False) + "\n")
+                pass
+
+            for message in self._build_initial_messages():
+                self.append_message_to_session(session_file, message)
             
-            return deleted_count - 1  # 减去保留的系统提示词
+            return max(0, deleted_count - 1)  # 减去保留的系统提示词
         except Exception as e:
             print(f"清空会话失败: {e}")
             return 0
