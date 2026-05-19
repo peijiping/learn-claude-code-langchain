@@ -12,7 +12,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 from session_manage import SessionManager
 from subagent import run_subagent
-from tools import PARENT_TOOLS, TOOL_HANDLERS, WORKDIR, SKILL_LOADER, BACKGROUND_MANAGER, BUS, TEAM, TASKS_DIR
+from tools import (
+    PARENT_TOOLS,
+    TOOL_HANDLERS,
+    WORKDIR,
+    SKILL_LOADER,
+    BACKGROUND_MANAGER,
+    set_todo_session,
+    get_todo_manager,
+)
 from llm_manage import create_llm_with_tools
 
 # 加载环境变量
@@ -45,8 +53,31 @@ SYSTEM = f"""
 5. 需要实现具体功能时
 6. 需要设计实现方案时
 
+## todo 会话看板使用决策
+todo 工具是当前会话内的任务看板，用于把本对话里的复杂请求拆成可执行步骤并持续更新进度；它不是 workspace/team 级任务图。不是所有请求都必须使用，你需要在开始执行前自行判断是否启用 todo 看板。
+
+建议启用 todo 看板的通用判断标准：
+1. 任务目标需要拆成多个可验证步骤，而不是一次工具调用即可完成
+2. 存在明确的阶段、阻塞条件或需要按顺序推进的工作流
+3. 任务可能跨多轮对话、长时间执行，或需要在上下文压缩、应用退出、崩溃后恢复进度
+4. 任务需要协调 sub_agent、后台任务、并行工作或多个产物，但仍属于当前会话内推进
+5. 任务风险较高，需要记录执行状态、验证结果、失败原因或待用户决策的问题
+
+不建议启用 todo 看板的情况：
+1. 简单问答、解释、翻译、改写等无需工具或只需一步工具调用的请求
+2. 用户明确要求只给建议、只分析、不执行
+3. 创建 todo 本身会比任务执行更重，且不会提升可追踪性或可靠性
+
+启用 todo 看板后的执行规范：
+1. **建板**：复杂任务第一轮工具调用优先使用 todo 创建关键步骤；items 必须是完整当前看板，不是增量补丁；text 写清目标、验收标准和预期结果
+2. **开工**：执行某个步骤前，调用 todo 将该项目标记为 in_progress；同一时间只能有一个 in_progress
+3. **收尾**：该步骤完成后，及时调用 todo 将其标记为 completed；失败或阻塞时保留未完成状态并在后续汇报中说明原因
+4. **协作**：需要隔离上下文、并行探索或委派执行时，基于 todo 边界分派 sub_agent
+5. **核对**：使用了 todo 看板的任务，在最终回复前确认 todo 状态，必要时再次调用 todo 更新
+6. **汇报**：最终汇总已完成 todo、关键产物、验证结果、未完成/阻塞项和需要用户决策的问题
+
 ## sub_agent 工具范围控制
-- 子智能体默认拥有全部工具权限，通过 prompt 描述引导其行为
+- 子智能体默认拥有执行工具权限，但不包含 todo；会话看板只由主智能体维护
 - 如需限制为只读操作，设置 allowed_tools=["bash","read_file","read_pdf"]
 - 例如搜索信息、读取文档时，可限制工具范围避免误写
 
@@ -66,10 +97,11 @@ SYSTEM = f"""
 
 ## 工作流程规范
 面对复杂任务时，按以下流程执行：
-1. **规划**：先在主对话中制定计划（不执行任何工具）
-2. **分发**：将计划中的子任务分发给子智能体
-3. **汇总**：收集子智能体结果，在主对话中综合分析
-4. **决策**：需要用户确认的决策，在主对话中提出
+1. **判断复杂度**：先判断是否需要 todo 看板、sub_agent 或普通工具即可完成
+2. **规划执行**：如果启用 todo，看板先行；如果不启用，直接采用最小可行工具路径
+3. **分发执行**：需要隔离上下文或并行处理时，再基于任务边界分发给 sub_agent
+4. **完成更新**：使用 todo 时，每完成一步都更新状态；未使用 todo 时，也要在回复中清楚说明执行过程
+5. **汇总决策**：收集工具和子智能体结果，汇报产物、验证结果、风险和需要用户确认的问题
 
 Skills 可使用列表：
 {SKILL_LOADER.get_descriptions()}
@@ -115,6 +147,7 @@ def _execute_tool_call(tool_call: dict) -> dict:
 def agent_loop(history_messages: list, session_file: Path, session_manager: SessionManager):
 
     iteration = 0  # 循环迭代计数
+    rounds_since_todo = 0  # 记录距离上次更新待办事项的轮数
 
     while True:
         iteration += 1
@@ -135,7 +168,6 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         # history_messages[:] = session_manager.trim_messages_to_limit(history_messages)
         history_messages[:] = session_manager.trim_messages_with_tool_compression(history_messages)
 
-
         llm_response = llm_with_tools.invoke(history_messages)
         # 加入大模型回复到历史消息中
         history_messages.append(llm_response)
@@ -151,7 +183,10 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         tool_call_results = []
         parallel_calls = []
         sequential_calls = []
+        used_todo = False
         for tool_call in llm_response.tool_calls:
+            if tool_call["name"] == "todo":
+                used_todo = True
             if tool_call["args"].get("parallel", False):
                 parallel_calls.append(tool_call)
             else:
@@ -169,15 +204,20 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         for tool_call in sequential_calls:
             tool_call_results.append(_execute_tool_call(tool_call))
 
+        rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
+        if get_todo_manager().has_open_items() and rounds_since_todo >= 3:
+            tool_call_results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
+
         print("》》》》》》》》")
         # 加入工具执行结果到历史消息中
-        history_messages.append(HumanMessage(content=json.dumps(tool_call_results)))
+        history_messages.append(HumanMessage(content=json.dumps(tool_call_results, ensure_ascii=False)))
         session_manager.append_message_to_session(session_file, history_messages[-1])
 
 
 def main():
     session_manager = SessionManager(CHAT_HISTORY_DIR, SYSTEM)
     session_num, session_file, history_messages = session_manager.init_session()
+    set_todo_session(session_num)
     
     while True:
         try:
@@ -191,6 +231,7 @@ def main():
         
         if query.strip().lower() == "@newsession":
             session_num, session_file = session_manager.create_new_session()
+            set_todo_session(session_num)
             history_messages = [SystemMessage(content=SYSTEM)]
             session_manager.append_message_to_session(session_file, history_messages[0])
             print(f"\033[33m已创建新会话: session_{session_num}.jsonl\033[0m")
@@ -200,6 +241,7 @@ def main():
             try:
                 target_num = int(query.strip().split()[1])
                 session_num, session_file, history_messages = session_manager.switch_session(target_num)
+                set_todo_session(session_num)
                 print(f"\033[33m已切换到会话: session_{session_num}.jsonl ({len(history_messages)} 条消息)\033[0m")
             except (ValueError, IndexError):
                 print("\033[31m用法: @switchsession <数字>\033[0m")
@@ -213,13 +255,12 @@ def main():
             print(f"\033[33m已清空当前会话，删除了 {deleted_count} 条历史消息\033[0m")
             continue
         
+        if query.strip() == "/todo":
+            print(get_todo_manager().render())
+            continue
+
         if query.strip() == "/tasks":
-            TASKS_DIR.mkdir(exist_ok=True)
-            for f in sorted(TASKS_DIR.glob("task_*.json")):
-                t = json.loads(f.read_text())
-                marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t["status"], "[?]")
-                owner = f" @{t['owner']}" if t.get("owner") else ""
-                print(f"  {marker} #{t['id']}: {t['subject']}{owner}")
+            print("当前主执行文件已改用会话级 /todo 看板；workspace 级 task 看板保留给后续团队智能体示例。")
             continue
 
         history_messages.append(HumanMessage(content=query))

@@ -12,7 +12,7 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from llm_manage import create_llm_with_tools
-from tools import TOOLS, CHILD_TOOLS_SUBAGENT, TOOL_HANDLERS, WORKDIR
+from tools import CHILD_TOOLS_SUBAGENT, TOOL_HANDLERS, WORKDIR
 
 
 DEFAULT_SYSTEM_PROMPT = f"""你是一个通用型子智能体，工作目录是 {WORKDIR}。
@@ -23,6 +23,7 @@ DEFAULT_SYSTEM_PROMPT = f"""你是一个通用型子智能体，工作目录是 
 3. **PDF 读取**：必须使用 read_pdf 工具读取 PDF，不要使用 strings/cat 等命令
 4. **摘要优先**：你的输出是给主智能体看的，只返回关键发现和结果，不要返回原始数据
 5. **安全操作**：执行写入或删除操作前，确认目标路径在工作目录内
+6. **看板边界**：不要创建或更新 todo 看板；会话看板由主智能体统一维护
 
 ## 输出格式
 完成任务后，用以下格式返回摘要：
@@ -125,18 +126,18 @@ def run_subagent(
     返回:
         str: 任务执行结果的摘要文本，如果无结果则返回 "(no summary)"
     """
-    sub_system = system_prompt or DEFAULT_SYSTEM_PROMPT
-
     if allowed_tools is not None:
         sub_tools = [t for t in CHILD_TOOLS_SUBAGENT if t["name"] in allowed_tools]
     else:
         sub_tools = CHILD_TOOLS_SUBAGENT
 
+    sub_system = system_prompt or DEFAULT_SYSTEM_PROMPT
+
     sub_messages = [SystemMessage(content=sub_system)]
     sub_messages.append(HumanMessage(content=prompt))
     sub_llm_with_tools = create_llm_with_tools(sub_tools)
 
-    tools_label = f"{len(allowed_tools)} tools" if allowed_tools else "all tools"
+    tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
     print(f"  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...")
 
     for iteration in range(30):

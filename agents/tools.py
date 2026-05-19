@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from skills import SkillLoader
 from task_manager import TaskManager
-# from todo_manager import TodoManager
+from todo_manager import TodoManager
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
 from message_bus import MessageBus, VALID_MSG_TYPES
@@ -33,6 +33,8 @@ SKILLS_DIR = ROOT_DIR / "skills"
 WORKDIR = ROOT_DIR / "WorkSpace"
 # 任务目录
 TASKS_DIR = WORKDIR / ".tasks"
+# 会话待办目录
+TODO_DIR = WORKDIR / ".todo"
 # 团队目录
 TEAM_DIR = WORKDIR / ".team"
 # 收件箱目录
@@ -42,8 +44,8 @@ INBOX_DIR = WORKDIR / ".inbox"
 
 # 创建全局 SkillLoader 实例
 SKILL_LOADER = SkillLoader(SKILLS_DIR)
-# 创建全局 TodoManager 实例
-# TODO_MANAGER = TodoManager()
+# 创建全局 TodoManager 实例；主程序启动后会用 set_todo_session 绑定到当前会话。
+TODO_MANAGER = TodoManager(TODO_DIR / "session_0.json")
 # 创建全局 TaskManager 实例
 TASKS = TaskManager(TASKS_DIR)
 # 创建全局 BackgroundManager 实例
@@ -52,6 +54,22 @@ BACKGROUND_MANAGER = BackgroundManager()
 BUS = MessageBus(INBOX_DIR)
 # 创建全局 TeammateManager 实例
 TEAM = TeammateManager(TEAM_DIR)
+
+
+def set_todo_session(session_num: int) -> TodoManager:
+    """
+    将 todo 工具绑定到指定会话编号。
+
+    session_1.jsonl 对应 .todo/session_1.json，确保会话恢复后待办看板也随之恢复。
+    """
+    global TODO_MANAGER
+    TODO_MANAGER = TodoManager(TODO_DIR / f"session_{session_num}.json")
+    return TODO_MANAGER
+
+
+def get_todo_manager() -> TodoManager:
+    """返回当前会话绑定的 TodoManager。"""
+    return TODO_MANAGER
 
 
 
@@ -191,9 +209,10 @@ TOOL_HANDLERS = {
     "read_pdf":   lambda **kw: run_read_pdf(kw["path"], kw.get("max_pages", 5), kw.get("chars_per_page", 3000)),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
-    # "todo":       lambda **kw: TODO_MANAGER.update(kw["items"]),
+    "todo":       lambda **kw: TODO_MANAGER.update(kw["items"]),
     "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
     "task_create": lambda **kw: TASKS.create(kw["subject"], kw.get("description", "")),
+    "task_create_many": lambda **kw: TASKS.create_many(kw["subject"], kw.get("description", ""), kw["steps"]),
     "task_update": lambda **kw: TASKS.update(kw["task_id"], kw.get("status"), kw.get("addBlockedBy"), kw.get("addBlocks")),
     "task_list":   lambda **kw: TASKS.list_all(),
     "task_get":    lambda **kw: TASKS.get(kw["task_id"]),
@@ -210,13 +229,90 @@ TOOL_HANDLERS = {
 }
 
 
-# ============================================================
-# 工具定义区域
-# ============================================================
+# 复杂任务的任务看板工具定义。父智能体和子智能体共享同一组描述，避免两处定义漂移。
+TASK_TOOLS = [
+    {
+        "name": "task_create",
+        "description": (
+            "创建一个持久化任务。适合简单任务或补充单个任务；复杂任务建议优先使用 "
+            "task_create_many 一次性创建总任务和关键子任务。description 应写清验收标准、输入来源、预期产物和依赖关系。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string", "description": "任务标题，应简短明确"},
+                "description": {"type": "string", "description": "任务细节、验收标准、输入来源、预期产物"},
+            },
+            "required": ["subject"],
+        },
+    },
+    {
+        "name": "task_create_many",
+        "description": (
+            "批量创建 workspace 级任务看板：一个总任务加多个子任务。复杂任务建议先用此工具把整体指令拆成"
+            "可执行任务列表；如果 steps 未显式 blockedBy，则默认按步骤顺序建立依赖。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string", "description": "总任务标题，应简短明确"},
+                "description": {"type": "string", "description": "总任务目标、验收标准和预期产物"},
+                "steps": {
+                    "type": "array",
+                    "description": "子任务列表，每个子任务是一个可执行步骤",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "subject": {"type": "string", "description": "子任务标题"},
+                            "description": {"type": "string", "description": "子任务细节、输入来源、预期产物"},
+                            "blockedBy": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "可选，阻塞该子任务的已有任务 ID；不填则按 steps 顺序依赖上一子任务",
+                            },
+                        },
+                        "required": ["subject"],
+                    },
+                },
+            },
+            "required": ["subject", "steps"],
+        },
+    },
+    {
+        "name": "task_update",
+        "description": (
+            "更新任务状态或依赖关系。使用 task 看板时，建议在执行某一步前将对应任务标记为 in_progress；"
+            "该步骤完成后及时标记为 completed。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer"},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                "addBlockedBy": {"type": "array", "items": {"type": "integer"}},
+                "addBlocks": {"type": "array", "items": {"type": "integer"}},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_list",
+        "description": "列出所有任务及其状态摘要。使用 task 看板时，建议在复杂任务最终回复前调用此工具核对完成状态。",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "task_get",
+        "description": "根据 ID 获取任务完整详情，用于继续执行、检查依赖或恢复上下文。",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer"}},
+            "required": ["task_id"],
+        },
+    },
+]
 
-# 定义工具的 JSON Schema（描述工具的名称、参数等）
-# 该工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
-TOOLS = [
+
+BASE_TOOL = [
     {
         "name": "bash","description": "执行 shell 命令。",
         "input_schema": {"type": "object","properties": {"command": {"type": "string"}},"required": ["command"]}
@@ -237,26 +333,57 @@ TOOLS = [
         "name": "edit_file","description": "替换文件中指定的文本内容。",
         "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},"required": ["path", "old_text", "new_text"]}
     },
-    # {
-    #     "name": "todo",
-    #     "description": "简单任务更新任务列表。用于跟踪多步骤任务的进度。",
-    #     "input_schema": { "type": "object", "properties": {"items": {"type": "array","items": {"type": "object","properties": {"id": {"type": "string"},"text": {"type": "string"},"status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}},"required": ["id", "text", "status"] }}},"required": ["items"]}
-    # },
     {"name": "load_skill", "description": "加载指定名称的专业技能（skill）知识。",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "要加载的专业技能（skill）名称"}}, "required": ["name"]}
     },
-    {"name": "task_create", "description": "创建一个新任务。",
-     "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "description": {"type": "string"}}, "required": ["subject"]}},
-    {"name": "task_update", "description": "更新任务的状态或依赖关系。",
-     "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}, "addBlockedBy": {"type": "array", "items": {"type": "integer"}}, "addBlocks": {"type": "array", "items": {"type": "integer"}}}, "required": ["task_id"]}},
-    {"name": "task_list", "description": "列出所有任务及其状态摘要。",
-     "input_schema": {"type": "object", "properties": {}}},
-    {"name": "task_get", "description": "根据ID获取任务的完整详情。",
-     "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
      {"name": "background_run", "description": "在后台线程中运行命令，立即返回task_id。",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
     {"name": "check_background", "description": "检查后台任务状态，省略task_id以列出所有任务。",
      "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}},
+]
+
+TODO_TOOL = [
+    {
+        "name": "todo",
+        "description": (
+            "更新当前会话的 todo 看板。用于把本轮对话内的多步骤工作拆成可执行清单，并持续跟踪进度。"
+            "items 必须传入完整当前看板，而不是增量补丁。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "text": {"type": "string"},
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                        },
+                        "required": ["id", "text", "status"],
+                    },
+                },
+            },
+            "required": ["items"],
+        },
+    }
+]
+
+
+# ============================================================
+# 工具定义区域
+# ============================================================
+
+# 定义工具的 JSON Schema（描述工具的名称、参数等）
+# 该工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
+SESSION_TOOLS = [
+    *BASE_TOOL,
+    *TODO_TOOL,
+]
+
+TOOLS = [
+    *SESSION_TOOLS,
      {"name": "spawn_teammate", "description": "生成一个在独立线程中运行的持久化队友。",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string"}, "prompt": {"type": "string"}}, "required": ["name", "role", "prompt"]}},
     {"name": "list_teammates", "description": "列出所有队友的名称、角色和状态。",
@@ -279,61 +406,14 @@ TOOLS = [
 
 # 子智能体的工具描述，工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
 CHILD_TOOLS_SUBAGENT = [
-    {
-        "name": "bash","description": "执行 shell 命令。",
-        "input_schema": {"type": "object","properties": {"command": {"type": "string"}},"required": ["command"]}
-    },
-    {
-        "name": "read_file","description": "读取文件内容。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},"required": ["path"]}
-    },
-    {
-        "name": "read_pdf","description": "使用 pymupdf 安全读取 PDF 文件，分页提取文本。读取 PDF 时必须使用此工具，不要使用 bash 的 strings/cat 等命令。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string","description": "PDF 文件路径"},"max_pages": {"type": "integer","description": "最大读取页数，默认5"},"chars_per_page": {"type": "integer","description": "每页最大字符数，默认3000"}},"required": ["path"]}
-    },
-    {
-        "name": "write_file","description": "将内容写入文件。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "content": {"type": "string"}},"required": ["path", "content"]}
-    },
-    {
-        "name": "edit_file","description": "替换文件中指定的文本内容。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},"required": ["path", "old_text", "new_text"]}
-    },
-    {
-        "name": "load_skill", "description": "加载指定名称的专业技能（skill）知识。",
-        "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "要加载的专业技能（skill）名称"}}, "required": ["name"]}
-    },
-    {
-        "name": "task_create", "description": "创建一个新任务。",
-        "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "description": {"type": "string"}}, "required": ["subject"]}
-    },
-    {
-        "name": "task_update", "description": "更新任务的状态或依赖关系。",
-        "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}, "addBlockedBy": {"type": "array", "items": {"type": "integer"}}, "addBlocks": {"type": "array", "items": {"type": "integer"}}}, "required": ["task_id"]}
-    },
-    {
-        "name": "task_list", "description": "列出所有任务及其状态摘要。",
-        "input_schema": {"type": "object", "properties": {}}
-    },
-    {
-        "name": "task_get", "description": "根据ID获取任务的完整详情。",
-        "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}
-    },
-    {
-        "name": "background_run", "description": "在后台线程中运行命令，立即返回task_id。",
-        "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
-    },
-    {
-        "name": "check_background", "description": "检查后台任务状态，省略task_id以列出所有任务。",
-        "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}
-    },
-    
+    *BASE_TOOL,
 ]
 
 # -- Parent tools: base tools + task dispatcher --
-PARENT_TOOLS = CHILD_TOOLS_SUBAGENT + [
+PARENT_TOOLS = [
+    *SESSION_TOOLS,
     {"name": "sub_agent",
-     "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有全部工具权限，通过 prompt 描述引导其行为。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下所有 PDF 的标题和摘要\", parallel=\"true\")\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")",
+     "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有执行工具权限，但不包含 todo；会话 todo 看板只由主智能体维护。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下所有 PDF 的标题和摘要\", parallel=\"true\")\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")",
      "input_schema": {
         "type": "object",
         "properties": {

@@ -10,6 +10,14 @@ import json
 from pathlib import Path
 
 
+def _unique_preserve_order(values: list) -> list:
+    result = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
 # -- TaskManager: 支持依赖关系图的CRUD操作，数据持久化为JSON文件 --
 class TaskManager:
     """
@@ -60,7 +68,7 @@ class TaskManager:
         path = self.dir / f"task_{task_id}.json"
         if not path.exists():
             raise ValueError(f"Task {task_id} not found")
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def _save(self, task: dict):
         """
@@ -70,7 +78,32 @@ class TaskManager:
             task: 任务数据的字典，必须包含 'id' 字段
         """
         path = self.dir / f"task_{task['id']}.json"
-        path.write_text(json.dumps(task, indent=2))
+        path.write_text(json.dumps(task, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def _dump(self, data) -> str:
+        return json.dumps(data, indent=2, ensure_ascii=False)
+
+    def _build_task(
+        self,
+        task_id: int,
+        subject: str,
+        description: str = "",
+        parent_id: int | None = None,
+        root_id: int | None = None,
+        order: int = 0,
+    ) -> dict:
+        return {
+            "id": task_id,
+            "subject": subject,
+            "description": description,
+            "status": "pending",
+            "blockedBy": [],
+            "blocks": [],
+            "owner": "",
+            "parent_id": parent_id,
+            "root_id": root_id if root_id is not None else task_id,
+            "order": order,
+        }
 
     def create(self, subject: str, description: str = "") -> str:
         """
@@ -92,18 +125,80 @@ class TaskManager:
             - blocks: 后置任务ID列表
             - owner: 任务负责人
         """
-        task = {
-            "id": self._next_id,  # 分配新ID
-            "subject": subject,   # 任务主题
-            "description": description,  # 任务描述
-            "status": "pending",  # 默认状态为待处理
-            "blockedBy": [],      # 被哪些前置任务阻塞
-            "blocks": [],         # 后置任务ID列表
-            "owner": "",          # 任务负责人
-        }
+        task = self._build_task(self._next_id, subject, description)
         self._save(task)  # 保存到文件
         self._next_id += 1  # 递增ID计数器
-        return json.dumps(task, indent=2)
+        return self._dump(task)
+
+    def create_many(self, subject: str, description: str = "", steps: list = None) -> str:
+        """
+        批量创建一个总任务和多个子任务。
+
+        steps 支持两种形式：
+            - "任务标题"
+            - {"subject": "任务标题", "description": "任务描述", "blockedBy": [2]}
+
+        如果 step 没有显式 blockedBy，则默认按步骤顺序串行依赖：第 N 步依赖第 N-1 步。
+        """
+        if not steps:
+            raise ValueError("steps must contain at least one task")
+
+        root_id = self._next_id
+        root = self._build_task(root_id, subject, description, order=0)
+        self._next_id += 1
+
+        child_tasks = []
+        for order, step in enumerate(steps, start=1):
+            if isinstance(step, str):
+                step_subject = step
+                step_description = ""
+                explicit_blocked_by = None
+            elif isinstance(step, dict):
+                step_subject = step.get("subject")
+                step_description = step.get("description", "")
+                explicit_blocked_by = step.get("blockedBy")
+            else:
+                raise ValueError("each step must be a string or object")
+
+            if not step_subject:
+                raise ValueError("each step must include a subject")
+
+            task = self._build_task(
+                self._next_id,
+                step_subject,
+                step_description,
+                parent_id=root_id,
+                root_id=root_id,
+                order=order,
+            )
+            self._next_id += 1
+
+            if explicit_blocked_by is not None:
+                task["blockedBy"] = _unique_preserve_order(explicit_blocked_by)
+            elif child_tasks:
+                task["blockedBy"] = [child_tasks[-1]["id"]]
+
+            child_tasks.append(task)
+
+        tasks_by_id = {root["id"]: root, **{task["id"]: task for task in child_tasks}}
+        for task in child_tasks:
+            for blocker_id in task["blockedBy"]:
+                blocker = tasks_by_id.get(blocker_id)
+                if blocker:
+                    blocker["blocks"] = _unique_preserve_order(blocker["blocks"] + [task["id"]])
+                else:
+                    try:
+                        blocker = self._load(blocker_id)
+                        blocker["blocks"] = _unique_preserve_order(blocker.get("blocks", []) + [task["id"]])
+                        self._save(blocker)
+                    except ValueError:
+                        pass
+
+        self._save(root)
+        for task in child_tasks:
+            self._save(task)
+
+        return self._dump({"root": root, "tasks": child_tasks})
 
     def get(self, task_id: int) -> str:
         """
@@ -115,7 +210,7 @@ class TaskManager:
         Returns:
             JSON格式的任务数据字符串
         """
-        return json.dumps(self._load(task_id), indent=2)
+        return self._dump(self._load(task_id))
 
     def update(self, task_id: int, status: str = None,
                add_blocked_by: list = None, add_blocks: list = None) -> str:
@@ -149,11 +244,11 @@ class TaskManager:
         # 添加阻塞当前任务的任务（当前任务依赖于这些任务）
         if add_blocked_by:
             # 使用set去重后转回list
-            task["blockedBy"] = list(set(task["blockedBy"] + add_blocked_by))
+            task["blockedBy"] = _unique_preserve_order(task["blockedBy"] + add_blocked_by)
         
         # 添加被当前任务阻塞的任务（这些任务依赖于当前任务）
         if add_blocks:
-            task["blocks"] = list(set(task["blocks"] + add_blocks))
+            task["blocks"] = _unique_preserve_order(task["blocks"] + add_blocks)
             # 双向更新：同时更新被阻塞任务的blockedBy列表
             for blocked_id in add_blocks:
                 try:
@@ -166,7 +261,7 @@ class TaskManager:
                     pass
         
         self._save(task)  # 保存更新后的任务
-        return json.dumps(task, indent=2)
+        return self._dump(task)
 
     def _clear_dependency(self, completed_id: int):
         """
@@ -179,7 +274,7 @@ class TaskManager:
             completed_id: 已完成的任务ID
         """
         for f in self.dir.glob("task_*.json"):
-            task = json.loads(f.read_text())
+            task = json.loads(f.read_text(encoding="utf-8"))
             if completed_id in task.get("blockedBy", []):
                 task["blockedBy"].remove(completed_id)
                 self._save(task)
@@ -203,7 +298,7 @@ class TaskManager:
         tasks = []
         # 读取所有任务文件
         for f in sorted(self.dir.glob("task_*.json")):
-            tasks.append(json.loads(f.read_text()))
+            tasks.append(json.loads(f.read_text(encoding="utf-8")))
         
         if not tasks:
             return "No tasks."

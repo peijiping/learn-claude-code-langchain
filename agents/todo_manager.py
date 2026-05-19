@@ -7,6 +7,10 @@ todo_manager.py - 待办事项管理模块
 
 
 
+import json
+from pathlib import Path
+
+
 # -- TodoManager: LLM 写入的结构化状态管理器 --
 class TodoManager:
     """
@@ -16,9 +20,39 @@ class TodoManager:
     支持三种状态：pending(待处理)、in_progress(进行中)、completed(已完成)
     """
     
-    def __init__(self):
-        """初始化空的任务列表"""
+    def __init__(self, todo_file: Path):
+        """初始化会话绑定的待办文件"""
+        self.todo_file = todo_file
         self.items = []
+        self.load()
+
+    def load(self) -> list:
+        """
+        从磁盘加载当前会话待办事项。
+
+        返回:
+            当前待办事项列表
+        """
+        self.todo_file.parent.mkdir(parents=True, exist_ok=True)
+        if not self.todo_file.exists():
+            self.items = []
+            return self.items
+
+        payload = json.loads(self.todo_file.read_text(encoding="utf-8"))
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        if not isinstance(items, list):
+            raise ValueError(f"Invalid todo file format: {self.todo_file}")
+        self.items = items
+        return self.items
+
+    def _save(self) -> None:
+        """保存当前会话待办事项到磁盘"""
+        self.todo_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"items": self.items}
+        self.todo_file.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
 
     def update(self, items: list) -> str:
         """
@@ -66,7 +100,17 @@ class TodoManager:
             raise ValueError("Only one task can be in_progress at a time")
         
         self.items = validated
+        self._save()
         return self.render()
+
+    def has_open_items(self) -> bool:
+        """
+        判断当前会话是否存在未完成待办事项。
+
+        返回:
+            True 表示存在 pending 或 in_progress 项
+        """
+        return any(item["status"] != "completed" for item in self.items)
 
     def render(self) -> str:
         """
