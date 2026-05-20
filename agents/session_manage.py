@@ -178,9 +178,16 @@ class SessionManager:
                     elif msg_type == "human":
                         messages.append(HumanMessage(content=content))
                     elif msg_type == "ai":
-                        ai_msg = AIMessage(content=content)
-                        if "tool_calls" in msg_data:
-                            ai_msg.tool_calls = msg_data["tool_calls"]
+                        ai_msg = AIMessage(
+                            content=content,
+                            additional_kwargs=msg_data.get("additional_kwargs", {}),
+                            response_metadata=msg_data.get("response_metadata", {}),
+                            id=msg_data.get("id"),
+                            name=msg_data.get("name"),
+                            tool_calls=msg_data.get("tool_calls", []),
+                            invalid_tool_calls=msg_data.get("invalid_tool_calls", []),
+                            usage_metadata=msg_data.get("usage_metadata"),
+                        )
                         messages.append(ai_msg)
                     elif msg_type == "tool":
                         messages.append(ToolMessage(
@@ -251,8 +258,20 @@ class SessionManager:
         elif isinstance(message, AIMessage):
             msg_data["type"] = "ai"
             msg_data["content"] = message.content
+            if message.additional_kwargs:
+                msg_data["additional_kwargs"] = self._json_safe(message.additional_kwargs)
+            if message.response_metadata:
+                msg_data["response_metadata"] = self._json_safe(message.response_metadata)
+            if message.id:
+                msg_data["id"] = message.id
+            if message.name:
+                msg_data["name"] = message.name
             if hasattr(message, "tool_calls") and message.tool_calls:
-                msg_data["tool_calls"] = message.tool_calls
+                msg_data["tool_calls"] = self._json_safe(message.tool_calls)
+            if hasattr(message, "invalid_tool_calls") and message.invalid_tool_calls:
+                msg_data["invalid_tool_calls"] = self._json_safe(message.invalid_tool_calls)
+            if getattr(message, "usage_metadata", None):
+                msg_data["usage_metadata"] = self._json_safe(message.usage_metadata)
         elif isinstance(message, ToolMessage):
             msg_data["type"] = "tool"
             msg_data["content"] = message.content
@@ -262,6 +281,14 @@ class SessionManager:
             msg_data["content"] = str(message)
 
         return msg_data
+
+    def _json_safe(self, value):
+        """确保 LangChain 附加元数据可以稳定写入 jsonl。"""
+        try:
+            json.dumps(value, ensure_ascii=False)
+            return value
+        except TypeError:
+            return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
     def append_message_to_session(self, session_file: Path, message) -> None:
         """

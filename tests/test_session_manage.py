@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 
 AGENTS_DIR = Path(__file__).resolve().parents[1] / "agents"
@@ -107,6 +107,24 @@ class SessionManagerTest(unittest.TestCase):
             "content": "tool result",
             "tool_call_id": "tool-1",
         })
+
+    def test_ai_message_round_trip_preserves_provider_extra_fields(self):
+        manager, _ = self.make_manager()
+        _, session_file, messages = manager.init_session()
+        ai_message = AIMessage(
+            content="answer",
+            additional_kwargs={"reasoning_content": "thinking trace"},
+            response_metadata={"finish_reason": "stop"},
+        )
+        messages.append(ai_message)
+
+        manager.save_session_history(session_file, messages)
+        loaded_messages = manager.load_session_history(session_file)
+
+        loaded_ai = loaded_messages[-1]
+        self.assertIsInstance(loaded_ai, AIMessage)
+        self.assertEqual(loaded_ai.additional_kwargs["reasoning_content"], "thinking trace")
+        self.assertEqual(loaded_ai.response_metadata["finish_reason"], "stop")
 
     def test_compact_messages_updates_memory_and_session_file_consistently(self):
         manager, _ = self.make_manager()
