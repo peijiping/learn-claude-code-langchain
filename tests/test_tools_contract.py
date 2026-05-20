@@ -61,11 +61,18 @@ class ToolsContractTest(unittest.TestCase):
         handler_names = load_tool_handler_names()
 
         self.assertIn("todo", tools_by_name)
+        self.assertIn("todo_new_board", tools_by_name)
         self.assertIn("todo", handler_names)
+        self.assertIn("todo_new_board", handler_names)
 
         schema = tools_by_name["todo"]["input_schema"]
         self.assertIn("items", schema["properties"])
         self.assertNotIn("session_id", schema["properties"])
+
+        new_board_schema = tools_by_name["todo_new_board"]["input_schema"]
+        self.assertIn("title", new_board_schema["properties"])
+        self.assertIn("items", new_board_schema["properties"])
+        self.assertNotIn("session_id", new_board_schema["properties"])
 
     def test_main_session_tools_hide_workspace_task_tools(self):
         tools_by_name = {tool["name"]: tool for tool in load_named_list("SESSION_TOOLS")}
@@ -77,6 +84,7 @@ class ToolsContractTest(unittest.TestCase):
         tools_by_name = {tool["name"]: tool for tool in load_named_list("CHILD_TOOLS_SUBAGENT")}
 
         self.assertNotIn("todo", tools_by_name)
+        self.assertNotIn("todo_new_board", tools_by_name)
 
     def test_task_create_many_tool_is_exposed_without_session_id(self):
         tools_by_name = {tool["name"]: tool for tool in load_task_tools()}

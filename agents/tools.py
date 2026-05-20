@@ -210,6 +210,7 @@ TOOL_HANDLERS = {
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     "todo":       lambda **kw: TODO_MANAGER.update(kw["items"]),
+    "todo_new_board": lambda **kw: TODO_MANAGER.create_board(kw["title"], kw["items"]),
     "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
     "task_create": lambda **kw: TASKS.create(kw["subject"], kw.get("description", "")),
     "task_create_many": lambda **kw: TASKS.create_many(kw["subject"], kw.get("description", ""), kw["steps"]),
@@ -346,8 +347,8 @@ TODO_TOOL = [
     {
         "name": "todo",
         "description": (
-            "更新当前会话的 todo 看板。用于把本轮对话内的多步骤工作拆成可执行清单，并持续跟踪进度。"
-            "items 必须传入完整当前看板，而不是增量补丁。"
+            "更新当前活跃 todo 看板。用于跟踪当前任务组的进度；items 必须传入当前活跃看板的完整列表，"
+            "不要传入历史看板的 items。新任务组必须先调用 todo_new_board。"
         ),
         "input_schema": {
             "type": "object",
@@ -370,6 +371,35 @@ TODO_TOOL = [
     }
 ]
 
+TODO_NEW_BOARD_TOOL = [
+    {
+        "name": "todo_new_board",
+        "description": (
+            "创建一个新的当前会话 todo 看板组，并自动设为活跃看板。用于新用户指令或新的复杂任务开始时；"
+            "历史已完成看板会保留，不要合并到新看板。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "新看板组标题，概括当前用户指令或任务目标"},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "text": {"type": "string"},
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                        },
+                        "required": ["id", "text", "status"],
+                    },
+                },
+            },
+            "required": ["title", "items"],
+        },
+    }
+]
+
 
 # ============================================================
 # 工具定义区域
@@ -379,6 +409,7 @@ TODO_TOOL = [
 # 该工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
 SESSION_TOOLS = [
     *BASE_TOOL,
+    *TODO_NEW_BOARD_TOOL,
     *TODO_TOOL,
 ]
 
