@@ -6,7 +6,7 @@
 import json
 import os
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
@@ -115,6 +115,33 @@ llm_with_tools = create_llm_with_tools(PARENT_TOOLS)
 MAX_AGENT_ITERATIONS = 50
 
 
+def maybe_compact_context(
+    history_messages: list,
+    session_file: Path,
+    session_manager: SessionManager,
+    manual: bool = False,
+) -> None:
+    """
+    检查并按阈值执行上下文压缩。
+
+    manual=True 用于 /compact：仍遵守触发阈值，未达阈值时只提示当前状态。
+    """
+    stats = session_manager.compact_manager.context_stats(history_messages)
+    if not manual and stats.used_percent < 95:
+        return
+
+    print(
+        f"\033[33m[上下文压缩] 正在检查上下文：当前 {stats.used_tokens}/{stats.max_label} tokens，"
+        f"剩余 {int(stats.remaining_percent)}%\033[0m"
+    )
+    session_manager.compact_messages_if_needed(
+        history_messages,
+        session_file,
+        force=False,
+        announce=True,
+    )
+
+
 def _execute_tool_call(tool_call: dict) -> dict:
     """执行单个工具调用（sub_agent 或普通工具），返回结果字典"""
     tool_name = tool_call["name"]
@@ -165,9 +192,8 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             history_messages.append({"role": "user", "content": f"<background-results>\n{notif_text}\n</background-results>"})
             history_messages.append({"role": "assistant", "content": "Noted background results."})
 
-        # 在调用 LLM 前截断上下文、替换旧消息中过长的工具消息为占位符，确保不超过限制
-        # history_messages[:] = session_manager.trim_messages_to_limit(history_messages)
-        history_messages[:] = session_manager.trim_messages_with_tool_compression(history_messages)
+        # 在调用 LLM 前检查上下文，达到阈值时阻塞执行压缩并同步会话文件。
+        maybe_compact_context(history_messages, session_file, session_manager)
 
         llm_response = llm_with_tools.invoke(history_messages)
         # 加入大模型回复到历史消息中
@@ -210,20 +236,35 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             tool_call_results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
 
         print("》》》》》》》》")
-        # 加入工具执行结果到历史消息中
-        history_messages.append(HumanMessage(content=json.dumps(tool_call_results, ensure_ascii=False)))
-        session_manager.append_message_to_session(session_file, history_messages[-1])
+        # 加入工具执行结果到历史消息中（必须为 ToolMessage，否则 OpenAI 会报 400）
+        for tc in llm_response.tool_calls:
+            # 找到对应 tool_call_id 的执行结果
+            result = next(
+                (r for r in tool_call_results if r.get("tool_id") == tc["id"]),
+                None,
+            )
+            if result is None:
+                tool_content = json.dumps(
+                    {"error": f"No result found for tool_call_id {tc['id']}"},
+                    ensure_ascii=False,
+                )
+            else:
+                tool_content = json.dumps(result, ensure_ascii=False)
+            tool_msg = ToolMessage(content=tool_content, tool_call_id=tc["id"])
+            history_messages.append(tool_msg)
+            session_manager.append_message_to_session(session_file, tool_msg)
 
 
 def main():
     session_manager = SessionManager(CHAT_HISTORY_DIR, SYSTEM)
+    session_manager.compact_manager.skill_loader = SKILL_LOADER
     session_num, session_file, history_messages = session_manager.init_session()
     set_todo_session(session_num)
     
     while True:
         try:
-            remaining_percent = session_manager.get_remaining_token_percent(history_messages)
-            query = input(f"\033[36m[session_{session_num} ({int(remaining_percent)}%)] >> \033[0m")
+            context_label = session_manager.format_context_label(history_messages)
+            query = input(f"\033[36m[session_{session_num} ({context_label})] >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         
@@ -258,12 +299,17 @@ def main():
             print(get_todo_manager().render())
             continue
 
+        if query.strip() == "/compact":
+            maybe_compact_context(history_messages, session_file, session_manager, manual=True)
+            continue
+
         if query.strip() == "/tasks":
             print("当前主执行文件已改用会话级 /todo 看板；workspace 级 task 看板保留给后续团队智能体示例。")
             continue
 
         history_messages.append(HumanMessage(content=query))
         session_manager.append_message_to_session(session_file, history_messages[-1])
+        maybe_compact_context(history_messages, session_file, session_manager)
         agent_loop(history_messages, session_file, session_manager)
         response_content = history_messages[-1].content
         if isinstance(response_content, list):
