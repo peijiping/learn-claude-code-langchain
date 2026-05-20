@@ -9,7 +9,7 @@ subagent.py - 通用型子智能体模块
 
 import json
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from llm_manage import create_llm_with_tools
 from tools import CHILD_TOOLS_SUBAGENT, TOOL_HANDLERS, WORKDIR
@@ -42,63 +42,6 @@ def _extract_content(response) -> str:
     if isinstance(response.content, list):
         return "".join(b.text for b in response.content if hasattr(b, "text"))
     return str(response.content) if response.content else ""
-
-
-def _truncate_messages(messages: list, max_history_rounds: int = 6) -> list:
-    """
-    截断消息历史，防止上下文无限膨胀。
-
-    策略：
-    - 始终保留 SystemMessage（第0条）和第一条 HumanMessage（任务描述）
-    - 对历史对话轮次（LLM回复 + 工具结果）进行滑动窗口截断，只保留最近 N 轮
-    - 对超长工具结果消息进行压缩替换
-
-    参数:
-        messages: 当前消息列表
-        max_history_rounds: 保留的最大历史轮次（每轮 = 1条LLM回复 + 1条工具结果）
-
-    返回:
-        截断后的消息列表
-    """
-    if len(messages) <= 2:
-        return messages
-
-    # 保留头部：SystemMessage + 第一条 HumanMessage
-    head = messages[:2]
-    # 历史部分：从第2条开始
-    tail = messages[2:]
-
-    # 每轮历史包含 2 条消息：LLM回复 + 工具结果HumanMessage
-    # 只保留最近 max_history_rounds * 2 条
-    max_tail_len = max_history_rounds * 2
-    if len(tail) > max_tail_len:
-        tail = tail[-max_tail_len:]
-        # 在截断处插入提示，告知 LLM 前面的历史已被省略
-        truncation_notice = HumanMessage(
-            content="[系统提示：前面的工具执行历史已省略，以下是最近的操作记录。请基于已有信息继续完成任务并返回摘要。]"
-        )
-        tail = [truncation_notice] + tail
-
-    # 对 tail 中每条消息做长度检查，超长则压缩
-    compressed_tail = []
-    for msg in tail:
-        content = getattr(msg, "content", "")
-        if isinstance(content, str) and len(content) > 15000:
-            # 超长消息：保留首尾，中间截断
-            head_text = content[:5000]
-            tail_text = content[-5000:]
-            compressed = (
-                f"{head_text}\n\n"
-                f"... [内容已截断，原长度 {len(content)} 字符，保留首 5000 + 尾 5000] ...\n\n"
-                f"{tail_text}"
-            )
-            compressed_tail.append(
-                HumanMessage(content=compressed) if isinstance(msg, HumanMessage) else type(msg)(content=compressed)
-            )
-        else:
-            compressed_tail.append(msg)
-
-    return head + compressed_tail
 
 
 def run_subagent(
@@ -140,14 +83,7 @@ def run_subagent(
     tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
     print(f"  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...")
 
-    for iteration in range(30):
-        # 每 3 轮截断一次上下文，防止消息无限膨胀
-        if iteration > 0 and iteration % 3 == 0:
-            original_len = len(sub_messages)
-            sub_messages = _truncate_messages(sub_messages, max_history_rounds=6)
-            if len(sub_messages) < original_len:
-                print(f"  [subagent] 上下文截断: {original_len} 条 -> {len(sub_messages)} 条")
-
+    for iteration in range(100):
         try:
             sub_response = sub_llm_with_tools.invoke(sub_messages)
         except Exception as e:
@@ -161,27 +97,39 @@ def run_subagent(
             content = _extract_content(sub_response)
             return content or "(no summary)"
 
-        results = []
         for tool_call in sub_response.tool_calls:
+            tool_name = tool_call["name"]
+            tool_id = tool_call["id"]
             if tool_call["name"]:
-                handler = TOOL_HANDLERS.get(tool_call["name"])
+                handler = TOOL_HANDLERS.get(tool_name)
                 if handler:
                     try:
                         output = handler(**tool_call["args"])
                     except Exception as e:
-                        output = f"Error executing {tool_call['name']}: {e}"
+                        output = f"Error executing {tool_name}: {e}"
                 else:
-                    output = f"Unknown tool: {tool_call['name']}"
-                results.append({
+                    output = f"Unknown tool: {tool_name}"
+                result = {
                     "type": "tool_result",
-                    "tool_name": tool_call["name"],
+                    "tool_name": tool_name,
                     "tool_args": tool_call["args"],
-                    "tool_id": tool_call["id"],
-                    "tool_output": str(output)[:5000],
-                })
+                    "tool_id": tool_id,
+                    "tool_output": str(output),
+                }
+            else:
+                result = {
+                    "type": "tool_result",
+                    "tool_id": tool_id,
+                    "tool_output": "Error: tool call missing name",
+                }
+            sub_messages.append(
+                ToolMessage(
+                    content=json.dumps(result, ensure_ascii=False),
+                    tool_call_id=tool_id,
+                )
+            )
 
-        sub_messages.append(HumanMessage(content=json.dumps(results)))
-        print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(results)} 个工具调用")
+        print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_response.tool_calls)} 个工具调用")
 
     # 30 轮到达上限，尝试从最后一轮响应中提取内容返回
     content = _extract_content(sub_response)

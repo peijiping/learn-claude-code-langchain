@@ -268,28 +268,28 @@ def main():
         except (EOFError, KeyboardInterrupt):
             break
         
-        if query.strip().lower() in ("q", "exit", ""):
+        if query.strip().lower() in ("/q", "/exit", ""):
             break
         
-        if query.strip().lower() == "@newsession":
+        if query.strip().lower() == "/newsession":
             session_num, session_file, history_messages = session_manager.create_initialized_session()
             set_todo_session(session_num)
             print(f"\033[33m已创建新会话: session_{session_num}.jsonl\033[0m")
             continue
         
-        if query.strip().lower().startswith("@switchsession "):
+        if query.strip().lower().startswith("/switchsession "):
             try:
                 target_num = int(query.strip().split()[1])
                 session_num, session_file, history_messages = session_manager.switch_session(target_num)
                 set_todo_session(session_num)
                 print(f"\033[33m已切换到会话: session_{session_num}.jsonl ({len(history_messages)} 条消息)\033[0m")
             except (ValueError, IndexError):
-                print("\033[31m用法: @switchsession <数字>\033[0m")
+                print("\033[31m用法: /switchsession <数字>\033[0m")
             except FileNotFoundError as e:
                 print(f"\033[31m{e}\033[0m")
             continue
         
-        if query.strip().lower() == "@clearsession":
+        if query.strip().lower() == "/clearsession":
             deleted_count = session_manager.clear_session(session_file)
             history_messages = session_manager.load_session_history(session_file)
             print(f"\033[33m已清空当前会话，删除了 {deleted_count} 条历史消息\033[0m")
