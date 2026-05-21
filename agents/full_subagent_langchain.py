@@ -112,7 +112,7 @@ llm_with_tools = create_llm_with_tools(PARENT_TOOLS)
 
 
 # 最大智能体循环迭代次数，防止无限循环导致程序卡死
-MAX_AGENT_ITERATIONS = 50
+MAX_AGENT_ITERATIONS = 100
 
 
 def maybe_compact_context(
@@ -199,6 +199,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         # 加入大模型回复到历史消息中
         history_messages.append(llm_response)
         session_manager.append_message_to_session(session_file, llm_response)
+        print(f"[本轮回复] {llm_response.content}")
 
         if not hasattr(llm_response, "tool_calls") or not llm_response.tool_calls:
             return
