@@ -296,7 +296,6 @@ class TaskManager:
             - [?]: 未知状态
         """
         tasks = []
-        # 读取所有任务文件
         for f in sorted(self.dir.glob("task_*.json")):
             tasks.append(json.loads(f.read_text(encoding="utf-8")))
         
@@ -305,10 +304,79 @@ class TaskManager:
         
         lines = []
         for t in tasks:
-            # 根据状态选择对应的标记
             marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t["status"], "[?]")
-            # 如果有阻塞信息，显示阻塞该任务的任务ID列表
             blocked = f" (blocked by: {t['blockedBy']})" if t.get("blockedBy") else ""
             lines.append(f"{marker} #{t['id']}: {t['subject']}{blocked}")
         
         return "\n".join(lines)
+
+    def render(self) -> str:
+        """
+        渲染任务看板为可读字符串，按根任务分组展示。
+
+        吸收 todo 看板的可视化长处，支持：
+        - 按根任务分组，展示总任务与子任务的层级关系
+        - 每组的进度统计（completed / total）
+        - 状态标记与阻塞信息
+
+        Returns:
+            格式化的任务看板字符串
+        """
+        tasks = []
+        for f in sorted(self.dir.glob("task_*.json")):
+            tasks.append(json.loads(f.read_text(encoding="utf-8")))
+
+        if not tasks:
+            return "No tasks."
+
+        marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}
+        tasks_by_id = {t["id"]: t for t in tasks}
+
+        # 找出所有根任务（没有 parent_id 或 parent_id 指向自身的）
+        roots = [t for t in tasks
+                 if t.get("parent_id") is None or t.get("parent_id") == t["id"]]
+
+        lines = []
+        for root in roots:
+            # 收集该根任务下的子任务
+            children = [t for t in tasks
+                        if t.get("root_id") == root["id"] and t["id"] != root["id"]]
+            children.sort(key=lambda t: t.get("order", 0))
+
+            group = [root] + children
+            done = sum(1 for t in group if t["status"] == "completed")
+            total = len(group)
+            lines.append(f"#{root['id']}: {root['subject']} ({done}/{total} completed)")
+
+            for t in group:
+                blocked = f" (blocked by: {t['blockedBy']})" if t.get("blockedBy") else ""
+                indent = "  " if t["id"] != root["id"] else ""
+                lines.append(f"{indent}{marker.get(t['status'], '[?]')} #{t['id']}: {t['subject']}{blocked}")
+            lines.append("")
+
+        # 处理没有根任务的孤立任务
+        orphan = [t for t in tasks
+                  if t.get("parent_id") is not None and t.get("root_id") not in tasks_by_id]
+        if orphan:
+            lines.append("--- 独立任务 ---")
+            done = sum(1 for t in orphan if t["status"] == "completed")
+            total = len(orphan)
+            lines.append(f"独立任务 ({done}/{total} completed)")
+            for t in orphan:
+                blocked = f" (blocked by: {t['blockedBy']})" if t.get("blockedBy") else ""
+                lines.append(f"  {marker.get(t['status'], '[?]')} #{t['id']}: {t['subject']}{blocked}")
+
+        return "\n".join(lines)
+
+    def has_open_items(self) -> bool:
+        """
+        判断是否存在未完成的任务。
+
+        Returns:
+            True 表示存在 pending 或 in_progress 状态的任务
+        """
+        for f in self.dir.glob("task_*.json"):
+            task = json.loads(f.read_text(encoding="utf-8"))
+            if task.get("status") in ("pending", "in_progress"):
+                return True
+        return False

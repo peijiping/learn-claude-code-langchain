@@ -17,7 +17,6 @@ import uuid
 from pathlib import Path
 from skills import SkillLoader
 from task_manager import TaskManager
-from todo_manager import TodoManager
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
 from message_bus import MessageBus, VALID_MSG_TYPES
@@ -30,11 +29,9 @@ ROOT_DIR = Path.cwd()
 SKILLS_DIR = ROOT_DIR / "skills"
 
 # 工作目录
-WORKDIR = ROOT_DIR / "WorkSpace"
+WORKDIR = ROOT_DIR / "WorkSpace/task1"
 # 任务目录
 TASKS_DIR = WORKDIR / ".tasks"
-# 会话待办目录
-TODO_DIR = WORKDIR / ".todo"
 # 团队目录
 TEAM_DIR = WORKDIR / ".team"
 # 收件箱目录
@@ -44,8 +41,6 @@ INBOX_DIR = WORKDIR / ".inbox"
 
 # 创建全局 SkillLoader 实例
 SKILL_LOADER = SkillLoader(SKILLS_DIR)
-# 创建全局 TodoManager 实例；主程序启动后会用 set_todo_session 绑定到当前会话。
-TODO_MANAGER = TodoManager(TODO_DIR / "session_0.json")
 # 创建全局 TaskManager 实例
 TASKS = TaskManager(TASKS_DIR)
 # 创建全局 BackgroundManager 实例
@@ -56,20 +51,9 @@ BUS = MessageBus(INBOX_DIR)
 TEAM = TeammateManager(TEAM_DIR)
 
 
-def set_todo_session(session_num: int) -> TodoManager:
-    """
-    将 todo 工具绑定到指定会话编号。
-
-    session_1.jsonl 对应 .todo/session_1.json，确保会话恢复后待办看板也随之恢复。
-    """
-    global TODO_MANAGER
-    TODO_MANAGER = TodoManager(TODO_DIR / f"session_{session_num}.json")
-    return TODO_MANAGER
-
-
-def get_todo_manager() -> TodoManager:
-    """返回当前会话绑定的 TodoManager。"""
-    return TODO_MANAGER
+def get_task_manager() -> TaskManager:
+    """返回全局 TaskManager 实例。"""
+    return TASKS
 
 
 
@@ -209,9 +193,8 @@ TOOL_HANDLERS = {
     "read_pdf":   lambda **kw: run_read_pdf(kw["path"], kw.get("max_pages", 5), kw.get("chars_per_page", 3000)),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
-    "todo":       lambda **kw: TODO_MANAGER.update(kw["items"]),
-    "todo_new_board": lambda **kw: TODO_MANAGER.create_board(kw["title"], kw["items"]),
     "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
+    "list_skills": lambda **kw: SKILL_LOADER.get_descriptions(),
     "task_create": lambda **kw: TASKS.create(kw["subject"], kw.get("description", "")),
     "task_create_many": lambda **kw: TASKS.create_many(kw["subject"], kw.get("description", ""), kw["steps"]),
     "task_update": lambda **kw: TASKS.update(kw["task_id"], kw.get("status"), kw.get("addBlockedBy"), kw.get("addBlocks")),
@@ -337,68 +320,15 @@ BASE_TOOL = [
     {"name": "load_skill", "description": "加载指定名称的专业技能（skill）知识。",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "要加载的专业技能（skill）名称"}}, "required": ["name"]}
     },
+    {"name": "list_skills", "description": "获取当前所有可用技能（skill）的名称和简短描述列表，用于了解当前会话支持哪些技能。",
+     "input_schema": {"type": "object", "properties": {}}
+    },
      {"name": "background_run", "description": "在后台线程中运行命令，立即返回task_id。",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
     {"name": "check_background", "description": "检查后台任务状态，省略task_id以列出所有任务。",
      "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}},
 ]
 
-TODO_TOOL = [
-    {
-        "name": "todo",
-        "description": (
-            "更新当前活跃 todo 看板。用于跟踪当前任务组的进度；items 必须传入当前活跃看板的完整列表，"
-            "不要传入历史看板的 items。新任务组必须先调用 todo_new_board。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "text": {"type": "string"},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
-                        },
-                        "required": ["id", "text", "status"],
-                    },
-                },
-            },
-            "required": ["items"],
-        },
-    }
-]
-
-TODO_NEW_BOARD_TOOL = [
-    {
-        "name": "todo_new_board",
-        "description": (
-            "创建一个新的当前会话 todo 看板组，并自动设为活跃看板。用于新用户指令或新的复杂任务开始时；"
-            "历史已完成看板会保留，不要合并到新看板。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "新看板组标题，概括当前用户指令或任务目标"},
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "text": {"type": "string"},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
-                        },
-                        "required": ["id", "text", "status"],
-                    },
-                },
-            },
-            "required": ["title", "items"],
-        },
-    }
-]
 
 
 # ============================================================
@@ -409,8 +339,7 @@ TODO_NEW_BOARD_TOOL = [
 # 该工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
 SESSION_TOOLS = [
     *BASE_TOOL,
-    *TODO_NEW_BOARD_TOOL,
-    *TODO_TOOL,
+    *TASK_TOOLS,
 ]
 
 TOOLS = [
@@ -444,7 +373,7 @@ CHILD_TOOLS_SUBAGENT = [
 PARENT_TOOLS = [
     *SESSION_TOOLS,
     {"name": "sub_agent",
-     "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有执行工具权限，但不包含 todo；会话 todo 看板只由主智能体维护。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下所有 PDF 的标题和摘要\", parallel=\"true\")\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")",
+     "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有执行工具权限，但不包含 task 系列工具；任务看板只由主智能体维护。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下所有 PDF 的标题和摘要\", parallel=\"true\")\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")",
      "input_schema": {
         "type": "object",
         "properties": {
