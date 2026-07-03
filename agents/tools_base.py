@@ -140,9 +140,9 @@ def run_bash(command: str) -> str:
             return "Error: 输出包含大量二进制数据，请使用专用工具（如 pymupdf 读取 PDF）而非 strings/cat/hexdump 等原始命令。"
 
         if r.returncode != 0:
-            return f"Error: command failed with return code {r.returncode}\n{_smart_truncate(out, 10000)}"
+            return f"Error: command failed with return code {r.returncode}\n{_smart_truncate(out, 50000)}"
 
-        return _smart_truncate(out, 10000) if out else "(command executed successfully, no output)"
+        return _smart_truncate(out, 50000) if out else "(command executed successfully, no output)"
 
     except subprocess.TimeoutExpired:
         # 命令执行超时（超过120秒）
