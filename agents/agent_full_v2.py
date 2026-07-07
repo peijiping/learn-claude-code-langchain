@@ -22,6 +22,23 @@ from tools import (
 )
 from llm_manage import create_llm_with_tools
 
+from check_permission import check_permission
+
+try:
+    import readline  # 导入 GNU readline 库，用于增强命令行输入功能
+    # 关闭终端特殊字符绑定，避免干扰输入
+    readline.parse_and_bind('set bind-tty-special-chars off')
+    # 启用输入元字符（支持 UTF-8/中文等非 ASCII 字符的输入）
+    readline.parse_and_bind('set input-meta on')
+    # 启用输出元字符（支持 UTF-8/中文等非 ASCII 字符的输出显示）
+    readline.parse_and_bind('set output-meta on')
+    # 关闭元字符转换，防止中文字符被转义
+    readline.parse_and_bind('set convert-meta off')
+except ImportError:
+    pass  # 如果 readline 不可用（如 Windows 环境），则跳过配置
+
+
+
 # 加载环境变量
 load_dotenv(override=True)
 
@@ -233,28 +250,24 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         print("*********")
         # 所有工具调用都根据 parallel 参数分组，并行组用线程池执行，串行组按顺序执行
         tool_call_results = []
-        parallel_calls = []
+        # parallel_calls = []
         sequential_calls = []
         used_task = False
         for tool_call in llm_response.tool_calls:
             if tool_call["name"] in ("task_create", "task_create_many", "task_update", "task_list", "task_get"):
                 used_task = True
-            if tool_call["args"].get("parallel", False):
-                parallel_calls.append(tool_call)
-            else:
-                sequential_calls.append(tool_call)
-
-        # 并行执行 parallel=true 的工具
-        if parallel_calls:
-            print()
-            with ThreadPoolExecutor(max_workers=len(parallel_calls)) as executor:
-                future_map = {executor.submit(_execute_tool_call, tc): tc for tc in parallel_calls}
-                for future in as_completed(future_map):
-                    tool_call_results.append(future.result())
-
-        # 串行执行 parallel=false 或未设置的工具
-        for tool_call in sequential_calls:
+            # 目前先不要并行执行，后续要优化并行执行方式，当前无论何种情况都是按顺序串行执行。
+            # s03 变更：执行前先经过权限管道检查
+            if not check_permission(tool_call):
+                results.append({"type": "tool_result", "tool_use_id": tool_call["id"],
+                                "content": "Permission denied."})
+                continue
+            
             tool_call_results.append(_execute_tool_call(tool_call))
+
+        # 并行执行 parallel=true 的工具,
+        # 目前先注释掉，不支持并行执行，因为当前的并行并未考虑到当同时返回多个工具时，多个工具有并行和顺序执行的执行顺序情况，目前仅为同时并行或同时串行。
+
 
         rounds_since_task = 0 if used_task else rounds_since_task + 1
         if get_task_manager().has_open_items() and rounds_since_task >= 3:
@@ -328,6 +341,7 @@ def main():
         history_messages.append(HumanMessage(content=query))
         session_manager.append_message_to_session(session_file, history_messages[-1])
         maybe_compact_context(history_messages, session_file, session_manager)
+        # 执行智能体主循环
         agent_loop(history_messages, session_file, session_manager)
         response_content = history_messages[-1].content
         if isinstance(response_content, list):

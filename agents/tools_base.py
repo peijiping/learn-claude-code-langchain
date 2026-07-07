@@ -19,38 +19,24 @@ import os
 import subprocess
 from pathlib import Path
 
-
-# =============================================================================
-# 全局常量和工作目录配置
-# =============================================================================
+from utils import is_binary_content, smart_truncate
 
 # 工作目录：所有文件操作都限制在此目录内，防止误操作系统关键文件
 # Path.cwd() 获取当前工作目录，/ "WorkSpace" 拼接子目录
 WORKDIR = Path.cwd() / "WorkSpace"
 
 
-
-
-
-# =============================================================================
-# 路径安全验证函数
-# =============================================================================
-
 def safe_path(p: str) -> Path:
     """
     验证路径是否在工作目录内，防止路径遍历攻击
-
     安全机制：
     - 将相对路径与工作目录拼接后转换为绝对路径
     - 检查最终路径是否仍然在 WORKDIR 内
     - 如果路径逃逸到 WORKDIR 之外，抛出 ValueError
-
     参数：
         p: 相对路径字符串
-
     返回：
         验证通过后的绝对路径(Path对象)
-
     异常：
         ValueError: 当路径试图逃逸到工作目录之外时抛出
                      例如：p = "../../etc/passwd" 会被拒绝
@@ -66,53 +52,15 @@ def safe_path(p: str) -> Path:
 
     return path
 
-
-# =============================================================================
-# Bash命令执行函数
-# =============================================================================
-
-def _is_binary_content(text: str) -> bool:
-    """检测输出是否包含大量二进制垃圾数据"""
-    if not text or len(text) < 100:
-        return False
-    sample = text[:2000]
-    printable = sum(1 for c in sample if c.isprintable() or c in '\n\r\t')
-    if (len(sample) - printable) / len(sample) > 0.3:
-        return True
-    binary_patterns = [
-        'endobj', 'endstream', '/FontDescriptor', '/CIDToGIDMap',
-        '/Type /Font', '/Subtype /CIDFont', '/BaseFont /',
-        '0 obj<<', '/FontFile2', '/ToUnicode',
-    ]
-    pattern_hits = sum(1 for p in binary_patterns if p in sample)
-    if pattern_hits >= 2:
-        return True
-    return False
-
-
-def _smart_truncate(text: str, max_chars: int = 10000) -> str:
-    """智能截断：保留首尾，中间用省略标记替代"""
-    if len(text) <= max_chars:
-        return text
-    head_size = max_chars // 2
-    tail_size = max_chars // 4
-    head = text[:head_size]
-    tail = text[-tail_size:]
-    return f"{head}\n\n... [输出已截断，共 {len(text)} 字符，保留首 {head_size} + 尾 {tail_size} 字符] ...\n\n{tail}"
-
-
 def run_bash(command: str) -> str:
     """
     执行shell命令并返回结果
-
     安全特性：
     - 危险命令黑名单检查：禁止 rm -rf /, sudo, shutdown, reboot 等高危操作
     - 超时保护：命令执行超过120秒会自动终止
     - 输出截断：结果最多返回50000字符，防止内存溢出
-
     参数：
         command: 要执行的shell命令字符串
-
     返回：
         命令成功：返回标准输出+标准错误的合并内容（最多50000字符）
         命令失败：返回格式 "Error: command failed with return code X\\n错误信息"
@@ -120,10 +68,8 @@ def run_bash(command: str) -> str:
         危险命令：返回 "Error: Dangerous command blocked"
     """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
-
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
-
     try:
         r = subprocess.run(
             command,
@@ -133,82 +79,53 @@ def run_bash(command: str) -> str:
             text=True,
             timeout=120
         )
-
         out = (r.stdout + r.stderr).strip()
-
-        if _is_binary_content(out):
+        if is_binary_content(out):
             return "Error: 输出包含大量二进制数据，请使用专用工具（如 pymupdf 读取 PDF）而非 strings/cat/hexdump 等原始命令。"
-
         if r.returncode != 0:
-            return f"Error: command failed with return code {r.returncode}\n{_smart_truncate(out, 50000)}"
-
-        return _smart_truncate(out, 50000) if out else "(command executed successfully, no output)"
-
+            return f"Error: 命令执行失败，返回码 {r.returncode}\n{smart_truncate(out, 50000)}"
+        return smart_truncate(out, 50000) if out else "(command executed successfully, no output)"
     except subprocess.TimeoutExpired:
         # 命令执行超时（超过120秒）
         return "Error: Timeout (120s)"
 
 
-# =============================================================================
-# 文件读取函数
-# =============================================================================
-
-def run_read(path: str, limit: int = None) -> str:
+def run_read(path: str, limit: int | None = None) -> str:
     """
     读取文件内容
-
     功能特性：
     - 使用 safe_path 进行安全路径验证
     - 支持行数限制：只读取前limit行，避免大文件撑爆内存
     - 当文件被截断时，显示剩余行数提示
     - 自动截断超长内容至50000字符
-
     参数：
         path: 要读取的文件路径（相对路径）
         limit: 可选，限制读取的行数。默认None表示读取全部
-
     返回：
         成功：文件内容字符串（可能被截断）
         失败：格式 "Error: {异常信息}"
     """
     try:
-        # 使用安全路径读取文件
-        text = safe_path(path).read_text()
-
-        # 按行分割文本
-        lines = text.splitlines()
-
-        # 如果设置了limit且文件行数超过limit
+        lines = safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
-            # 截取前limit行，并添加提示信息
             lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-
-        # 合并行，截断至50000字符
-        return "\n".join(lines)[:50000]
-
+        return "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
 
 
-# =============================================================================
-# PDF 读取函数
-# =============================================================================
-
 def run_read_pdf(path: str, max_pages: int = 5, chars_per_page: int = 3000) -> str:
     """
     使用 pymupdf 安全读取 PDF 文件，分页提取文本
-
     功能特性：
     - 使用 safe_path 进行安全路径验证
     - 分页提取，每页限制字符数
     - 限制最大读取页数
     - 总输出截断至 30000 字符
-
     参数：
         path: PDF 文件路径（相对路径）
         max_pages: 最大读取页数，默认5页
         chars_per_page: 每页最大字符数，默认3000
-
     返回：
         成功：PDF 文本内容
         失败：格式 "Error: {异常信息}"
@@ -219,16 +136,13 @@ def run_read_pdf(path: str, max_pages: int = 5, chars_per_page: int = 3000) -> s
             return f"Error: File not found: {path}"
         if not str(fp).lower().endswith('.pdf'):
             return f"Error: Not a PDF file: {path}"
-
         try:
             import fitz
         except ImportError:
             return "Error: pymupdf 未安装。请运行: python3 -m pip install pymupdf"
-
         doc = fitz.open(str(fp))
         total_pages = len(doc)
         results = [f"PDF: {path}, 总页数: {total_pages}"]
-
         read_pages = min(max_pages, total_pages)
         for i in range(read_pages):
             text = doc[i].get_text().strip()
@@ -237,10 +151,8 @@ def run_read_pdf(path: str, max_pages: int = 5, chars_per_page: int = 3000) -> s
                 results.append(text[:chars_per_page])
             else:
                 results.append(f"--- 第 {i+1} 页 --- (无可提取文本，可能为扫描件)")
-
         if total_pages > read_pages:
             results.append(f"... (还有 {total_pages - read_pages} 页未读取，可增大 max_pages 参数)")
-
         doc.close()
         return "\n".join(results)[:30000]
 
@@ -248,66 +160,46 @@ def run_read_pdf(path: str, max_pages: int = 5, chars_per_page: int = 3000) -> s
         return f"Error: {e}"
 
 
-# =============================================================================
-# 文件写入函数
-# =============================================================================
-
 def run_write(path: str, content: str) -> str:
     """
     写入内容到文件
-
     功能特性：
     - 使用 safe_path 进行安全路径验证
     - 自动创建父目录：如果父目录不存在会递归创建
     - 覆盖写入：目标文件已存在会被覆盖
     - 返回写入字节数，便于验证
-
     参数：
         path: 要写入的文件路径（相对路径）
         content: 要写入的内容字符串
-
     返回：
         成功：格式 "Wrote {字节数} bytes to {路径}"
         失败：格式 "Error: {异常信息}"
     """
     try:
         fp = safe_path(path)
-
         # 自动创建父目录
         # parents=True: 递归创建所有不存在的父目录
         # exist_ok=True: 如果目录已存在不报错
         fp.parent.mkdir(parents=True, exist_ok=True)
-
         # 写入内容（覆盖模式）
         fp.write_text(content)
-
-        return f"Wrote {len(content)} bytes to {path}"
-
+        return f"已写入： {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
-
-
-# =============================================================================
-# 文件编辑函数
-# =============================================================================
-
 
 
 def run_edit(path: str, old_text: str, new_text: str) -> str:
     """
     替换文件中的指定文本
-
     功能特性：
     - 使用 safe_path 进行安全路径验证
     - 精确替换：只替换第一处匹配（使用 count=1）
     - 先检查再写入：验证old_text存在后才执行替换
     - 原子性保证：读取和写入之间可能存在竞态条件
-
     参数：
         path: 要编辑的文件路径（相对路径）
         old_text: 要被替换的原文本（必须是完整的连续字符串）
         new_text: 替换后的新文本
-
     返回：
         成功：格式 "Edited {路径}"
         失败（文本未找到）：格式 "Error: Text not found in {路径}"
@@ -315,21 +207,37 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
     """
     try:
         fp = safe_path(path)
-
         # 读取文件全部内容
         content = fp.read_text()
-
         # 检查要替换的文本是否存在于文件中
         if old_text not in content:
             return f"Error: Text not found in {path}"
-
         # 执行替换：只替换第一处匹配
         # replace(old_text, new_text, 1) 中的 1 表示只替换一次
         fp.write_text(content.replace(old_text, new_text, 1))
-
-        return f"Edited {path}"
-
+        return f"已编辑： {path}"
     except Exception as e:
         return f"Error: {e}"
 
 
+def run_glob(pattern: str) -> str:
+    """
+    使用 glob 模块搜索匹配的文件路径
+    功能特性：
+    - 使用 safe_path 进行安全路径验证
+    - 仅返回相对于工作目录的路径
+    参数：
+        pattern: 要匹配的文件路径模式（支持 glob 模式）
+    返回：
+        成功：匹配的文件路径列表（每个路径占一行）
+        失败：格式 "Error: {异常信息}"
+    """
+    import glob as g
+    try:
+        results = []
+        for match in g.glob(pattern, root_dir=WORKDIR):
+            if (WORKDIR / match).resolve().is_relative_to(WORKDIR):
+                results.append(match)
+        return "\n".join(results) if results else "(no matches)"
+    except Exception as e:
+        return f"Error: {e}"

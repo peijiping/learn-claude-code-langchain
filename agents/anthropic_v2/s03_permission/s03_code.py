@@ -217,7 +217,7 @@ def agent_loop(messages: list):
 
             print(f"\033[36m> {block.name}\033[0m")
 
-            # s03 change: run through permission pipeline before executing
+            # s03 变更：执行前先经过权限管道检查
             if not check_permission(block):
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                 "content": "Permission denied."})

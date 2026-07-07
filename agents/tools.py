@@ -20,7 +20,7 @@ from task_manager import TaskManager
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
 from message_bus import MessageBus, VALID_MSG_TYPES
-from tools_base import safe_path, run_bash, run_read, run_read_pdf, run_write, run_edit
+from tools_base import safe_path, run_bash, run_read, run_read_pdf, run_write, run_edit, run_glob
 
 
 # 根目录
@@ -189,10 +189,11 @@ def _check_shutdown_status(request_id: str) -> str:
 # 当大模型返回工具调用请求时，根据工具名找到对应的函数来执行
 TOOL_HANDLERS = {
     "bash":       lambda **kw: run_bash(kw["command"]),
-    "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
-    "read_pdf":   lambda **kw: run_read_pdf(kw["path"], kw.get("max_pages", 5), kw.get("chars_per_page", 3000)),
-    "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
-    "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+    "run_read":  lambda **kw: run_read(kw["path"], kw.get("limit")),
+    "run_read_pdf":   lambda **kw: run_read_pdf(kw["path"], kw.get("max_pages", 5), kw.get("chars_per_page", 3000)),
+    "run_write": lambda **kw: run_write(kw["path"], kw["content"]),
+    "run_edit":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+    "run_glob":  lambda **kw: run_glob(kw["pattern"]),
     "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
     "list_skills": lambda **kw: SKILL_LOADER.get_descriptions(),
     "task_create": lambda **kw: TASKS.create(kw["subject"], kw.get("description", "")),
@@ -218,8 +219,7 @@ TASK_TOOLS = [
     {
         "name": "task_create",
         "description": (
-            "创建一个持久化任务。适合简单任务或补充单个任务；复杂任务建议优先使用 "
-            "task_create_many 一次性创建总任务和关键子任务。description 应写清验收标准、输入来源、预期产物和依赖关系。"
+            "创建一个持久化任务。适合简单任务或补充单个任务；复杂任务建议优先使用 task_create_many 一次性创建总任务和关键子任务。description 应写清验收标准、输入来源、预期产物和依赖关系。"
         ),
         "input_schema": {
             "type": "object",
@@ -233,8 +233,7 @@ TASK_TOOLS = [
     {
         "name": "task_create_many",
         "description": (
-            "批量创建 workspace 级任务看板：一个总任务加多个子任务。复杂任务建议先用此工具把整体指令拆成"
-            "可执行任务列表；如果 steps 未显式 blockedBy，则默认按步骤顺序建立依赖。"
+            "批量创建 workspace 级任务看板：一个总任务加多个子任务。复杂任务建议先用此工具把整体指令拆成可执行任务列表；如果 steps 未显式 blockedBy，则默认按步骤顺序建立依赖。"
         ),
         "input_schema": {
             "type": "object",
@@ -302,20 +301,24 @@ BASE_TOOL = [
         "input_schema": {"type": "object","properties": {"command": {"type": "string"}},"required": ["command"]}
     },
     {
-        "name": "read_file","description": "读取文件内容。",
+        "name": "run_read","description": "读取文件内容。",
         "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},"required": ["path"]}
     },
     {
-        "name": "read_pdf","description": "使用 pymupdf 安全读取 PDF 文件，分页提取文本。读取 PDF 时必须使用此工具，不要使用 bash 的 strings/cat 等命令。",
+        "name": "run_read_pdf","description": "使用 pymupdf 安全读取 PDF 文件，分页提取文本。读取 PDF 时必须使用此工具，不要使用 bash 的 strings/cat 等命令。",
         "input_schema": {"type": "object","properties": {"path": {"type": "string","description": "PDF 文件路径"},"max_pages": {"type": "integer","description": "最大读取页数，默认5"},"chars_per_page": {"type": "integer","description": "每页最大字符数，默认3000"}},"required": ["path"]}
     },
     {
-        "name": "write_file","description": "将内容写入文件。",
+        "name": "run_write","description": "将内容写入文件。",
         "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "content": {"type": "string"}},"required": ["path", "content"]}
     },
     {
-        "name": "edit_file","description": "替换文件中指定的文本内容。",
+        "name": "run_edit","description": "替换文件中指定的文本内容。",
         "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},"required": ["path", "old_text", "new_text"]}
+    },
+    {
+        "name": "run_glob","description": "使用 glob 模式匹配文件路径。",
+        "input_schema": {"type": "object","properties": {"pattern": {"type": "string","description": "要匹配的文件路径模式"}}, "required": ["pattern"]}
     },
     {"name": "load_skill", "description": "加载指定名称的专业技能（skill）知识。",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "要加载的专业技能（skill）名称"}}, "required": ["name"]}
