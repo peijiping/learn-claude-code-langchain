@@ -30,8 +30,9 @@ SKILLS_DIR = ROOT_DIR / "skills"
 
 # 工作目录
 WORKDIR = ROOT_DIR / "WorkSpace/task1"
-# 待办文件
-TODO_FILE = WORKDIR / ".todo.json"
+# 待办目录与文件
+TODO_DIR = WORKDIR / ".todo"
+TODO_FILE = TODO_DIR / "todo.json"
 # 团队目录
 TEAM_DIR = WORKDIR / ".team"
 # 收件箱目录
