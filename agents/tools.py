@@ -16,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 from skills import SkillLoader
-from task_manager import TaskManager
+from todo_manager import TodoManager
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
 from message_bus import MessageBus, VALID_MSG_TYPES
@@ -30,8 +30,8 @@ SKILLS_DIR = ROOT_DIR / "skills"
 
 # 工作目录
 WORKDIR = ROOT_DIR / "WorkSpace/task1"
-# 任务目录
-TASKS_DIR = WORKDIR / ".tasks"
+# 待办文件
+TODO_FILE = WORKDIR / ".todo.json"
 # 团队目录
 TEAM_DIR = WORKDIR / ".team"
 # 收件箱目录
@@ -41,8 +41,8 @@ INBOX_DIR = WORKDIR / ".inbox"
 
 # 创建全局 SkillLoader 实例
 SKILL_LOADER = SkillLoader(SKILLS_DIR)
-# 创建全局 TaskManager 实例
-TASKS = TaskManager(TASKS_DIR)
+# 创建全局 TodoManager 实例
+TODO_MANAGER = TodoManager(TODO_FILE)
 # 创建全局 BackgroundManager 实例
 BACKGROUND_MANAGER = BackgroundManager()
 # 创建全局 MessageBus 实例
@@ -51,9 +51,9 @@ BUS = MessageBus(INBOX_DIR)
 TEAM = TeammateManager(TEAM_DIR)
 
 
-def get_task_manager() -> TaskManager:
-    """返回全局 TaskManager 实例。"""
-    return TASKS
+def get_todo_manager() -> TodoManager:
+    """返回全局 TodoManager 实例。"""
+    return TODO_MANAGER
 
 
 
@@ -196,11 +196,7 @@ TOOL_HANDLERS = {
     "run_glob":  lambda **kw: run_glob(kw["pattern"]),
     "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
     "list_skills": lambda **kw: SKILL_LOADER.get_descriptions(),
-    "task_create": lambda **kw: TASKS.create(kw["subject"], kw.get("description", "")),
-    "task_create_many": lambda **kw: TASKS.create_many(kw["subject"], kw.get("description", ""), kw["steps"]),
-    "task_update": lambda **kw: TASKS.update(kw["task_id"], kw.get("status"), kw.get("addBlockedBy"), kw.get("addBlocks")),
-    "task_list":   lambda **kw: TASKS.list_all(),
-    "task_get":    lambda **kw: TASKS.get(kw["task_id"]),
+    "todo":         lambda **kw: TODO_MANAGER.update(kw["items"], kw.get("fresh_start", False)),
     "background_run":   lambda **kw: BACKGROUND_MANAGER.run(kw["command"]),
     "check_background": lambda **kw: BACKGROUND_MANAGER.check(kw.get("task_id")),
     "spawn_teammate":   lambda **kw: TEAM.spawn(kw["name"], kw["role"], kw["prompt"]),
@@ -214,82 +210,42 @@ TOOL_HANDLERS = {
 }
 
 
-# 复杂任务的任务看板工具定义。父智能体和子智能体共享同一组描述，避免两处定义漂移。
-TASK_TOOLS = [
+# 单会话待办列表工具定义。父智能体和子智能体共享同一组描述，避免两处定义漂移。
+TODO_TOOLS = [
     {
-        "name": "task_create",
+        "name": "todo",
         "description": (
-            "创建一个持久化任务。适合简单任务或补充单个任务；复杂任务建议优先使用 task_create_many 一次性创建总任务和关键子任务。description 应写清验收标准、输入来源、预期产物和依赖关系。"
+            "更新当前会话的待办列表。整体替换语义：传入完整的 items 数组即可。"
+            "对复杂任务建议在动手前先调用一次（把计划铺开），执行中逐步把对应项标记为 in_progress / completed。"
+            "fresh_start=True 表示开始新计划——会先丢弃当前列表里所有已完成的任务，适合在同一会话内切换到下一个独立任务时使用。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "subject": {"type": "string", "description": "任务标题，应简短明确"},
-                "description": {"type": "string", "description": "任务细节、验收标准、输入来源、预期产物"},
-            },
-            "required": ["subject"],
-        },
-    },
-    {
-        "name": "task_create_many",
-        "description": (
-            "批量创建 workspace 级任务看板：一个总任务加多个子任务。复杂任务建议先用此工具把整体指令拆成可执行任务列表；如果 steps 未显式 blockedBy，则默认按步骤顺序建立依赖。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "subject": {"type": "string", "description": "总任务标题，应简短明确"},
-                "description": {"type": "string", "description": "总任务目标、验收标准和预期产物"},
-                "steps": {
+                "items": {
                     "type": "array",
-                    "description": "子任务列表，每个子任务是一个可执行步骤",
+                    "description": "完整的待办事项列表。",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "subject": {"type": "string", "description": "子任务标题"},
-                            "description": {"type": "string", "description": "子任务细节、输入来源、预期产物"},
-                            "blockedBy": {
-                                "type": "array",
-                                "items": {"type": "integer"},
-                                "description": "可选，阻塞该子任务的已有任务 ID；不填则按 steps 顺序依赖上一子任务",
+                            "id": {"type": "string", "description": "任务标识，可省略，省略时按数组下标生成。"},
+                            "text": {"type": "string", "description": "任务内容（必填）。"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                                "description": "任务状态；同一时刻只能有 1 个 in_progress。",
                             },
                         },
-                        "required": ["subject"],
+                        "required": ["text", "status"],
                     },
                 },
+                "fresh_start": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "True 时表示开始新计划——先清掉当前列表里所有已完成的任务，再用 items 替换整个列表。",
+                },
             },
-            "required": ["subject", "steps"],
-        },
-    },
-    {
-        "name": "task_update",
-        "description": (
-            "更新任务状态或依赖关系。使用 task 看板时，建议在执行某一步前将对应任务标记为 in_progress；"
-            "该步骤完成后及时标记为 completed。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "integer"},
-                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
-                "addBlockedBy": {"type": "array", "items": {"type": "integer"}},
-                "addBlocks": {"type": "array", "items": {"type": "integer"}},
-            },
-            "required": ["task_id"],
-        },
-    },
-    {
-        "name": "task_list",
-        "description": "列出所有任务及其状态摘要。使用 task 看板时，建议在复杂任务最终回复前调用此工具核对完成状态。",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "task_get",
-        "description": "根据 ID 获取任务完整详情，用于继续执行、检查依赖或恢复上下文。",
-        "input_schema": {
-            "type": "object",
-            "properties": {"task_id": {"type": "integer"}},
-            "required": ["task_id"],
+            "required": ["items"],
         },
     },
 ]
@@ -342,7 +298,7 @@ BASE_TOOL = [
 # 该工具是大模型初始化时给大模型传参用，告诉大模型有哪些工具可用
 SESSION_TOOLS = [
     *BASE_TOOL,
-    *TASK_TOOLS,
+    *TODO_TOOLS,
 ]
 
 TOOLS = [

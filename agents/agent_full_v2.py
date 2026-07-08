@@ -18,7 +18,7 @@ from tools import (
     WORKDIR,
     SKILL_LOADER,
     BACKGROUND_MANAGER,
-    get_task_manager,
+    get_todo_manager,
 )
 from llm_manage import create_llm_with_tools
 
@@ -78,7 +78,7 @@ SYSTEM = f"""
 6. 需要设计实现方案
 
 ### 工具范围控制
-- 子智能体默认拥有执行工具权限，但不包含 task 系列工具（task_create、task_create_many、task_update）；任务看板只由主智能体维护
+- 子智能体默认拥有执行工具权限，但不包含 todo 工具；待办列表只由主智能体维护
 - 如需限制为只读操作，设置 allowed_tools=["bash","read_file","read_pdf"]
 
 ### 使用示例
@@ -112,37 +112,35 @@ SYSTEM = f"""
 | 需要边跑边干其他事 | background_run |
 | sub_agent 间无依赖 | parallel=true |
 
-# 三、任务看板（task）
+# 三、待办列表（todo）
 
-task_create、task_create_many、task_update、task_list、task_get 是 workspace 级任务看板工具，用于把复杂请求拆成可执行步骤、管理依赖关系并持续更新进度。
+todo 是单会话待办列表工具，用于把复杂请求拆成可执行步骤并持续更新进度。
+数据持久化为单个 JSON 文件，会话内有效；不支持跨 session 恢复，也不支持任务间的依赖图。
 
 ## 何时启用
 **建议启用：**
 1. 任务需要拆成多个可验证步骤
-2. 存在明确的阶段、阻塞条件或串行依赖
-3. 任务可能跨多轮对话、长时间执行，或需要在崩溃后恢复进度
-4. 需要协调 sub_agent、后台任务、并行工作或多个产物
-5. 风险较高，需记录执行状态、验证结果和失败原因
+2. 任务可能跨多轮对话，需要明确"现在到哪一步"
+3. 风险较高，需要记录执行状态避免跑偏
+4. 收尾前需要给用户一份进度汇总
 
 **不必启用：**
 - 简单问答、解释、改写等无需工具或只需一步的请求
 - 用户明确要求只给建议、不执行
-- 创建看板比任务本身更重
+- 列计划比任务本身更重
 
 ## 执行规范
-1. **新建任务组**：新的复杂指令开始时，优先用 task_create_many 创建总任务和子任务；steps 只包含新任务组的步骤
-2. **更新任务**：task_update 更新单个任务状态；执行前标记 in_progress，完成后标记 completed
-3. **开工约束**：同一任务组内只能有一个 in_progress
-4. **收尾**：完成后及时标记 completed；失败或阻塞保留未完成状态并说明原因
-5. **协作**：需要隔离上下文或并行探索时，基于任务边界分派 sub_agent
-6. **核对**：复杂任务最终回复前调用 task_list 核对完成状态
-7. **汇报**：汇总已完成任务、关键产物、验证结果、未完成/阻塞项和待决策问题
+1. **列计划**：动手前先用 todo 把步骤铺开（全部 pending 状态）
+2. **开工**：开始某一步时把对应项标记为 in_progress；同一时刻只能有 1 个 in_progress
+3. **收尾**：完成后及时标记 completed；不要保留已完成的项占用视觉
+4. **新计划**：fresh_start=True 表示开始新计划——会先清掉当前已完成的项，再用新的 items 整体替换
+5. **核对**：复杂任务最终回复前调用 todo 一次（即使没变化）以触发 render，便于汇总进度
 
 # 四、工作流程
 
 面对复杂任务时，按以下流程执行：
 1. **判断复杂度**：是否需要任务看板、sub_agent，还是普通工具即可
-2. **规划执行**：启用任务看板则用 task_create_many 创建任务组；已有进度用 task_update 更新；不启用则直接走最小工具路径
+2. **规划执行**：启用待办则先用 todo 列计划；已有进度用 todo 更新；不启用则直接走最小工具路径
 3. **分发执行**：需要隔离上下文或并行处理时，基于任务边界分派 sub_agent
 4. **完成更新**：使用任务看板时每步更新状态；未使用时在回复中说明执行过程
 5. **汇总决策**：收集工具和子智能体结果，汇报产物、验证结果、风险和待确认问题
@@ -218,7 +216,7 @@ def _execute_tool_call(tool_call: dict) -> dict:
 def agent_loop(history_messages: list, session_file: Path, session_manager: SessionManager):
 
     iteration = 0  # 循环迭代计数
-    rounds_since_task = 0  # 记录距离上次更新任务看板的轮数
+    rounds_since_todo = 0  # 记录距离上次调用 todo 工具的轮数，用于 nag reminder
 
     while True:
         iteration += 1
@@ -257,10 +255,10 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         print("*********")
         # 所有工具调用都根据 parallel 参数分组，并行组用线程池执行，串行组按顺序执行
         tool_call_results = []
-        used_task = False
+        used_todo = False
         for tool_call in llm_response.tool_calls:
-            if tool_call["name"] in ("task_create", "task_create_many", "task_update", "task_list", "task_get"):
-                used_task = True
+            if tool_call["name"] == "todo":
+                used_todo = True
             # 目前先不要并行执行，后续要优化并行执行方式，当前无论何种情况都是按顺序串行执行。
             # s03 变更：执行前先经过权限管道检查
             # if not check_permission(tool_call):
@@ -283,8 +281,8 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         # 目前先注释掉，不支持并行执行，因为当前的并行并未考虑到当同时返回多个工具时，多个工具有并行和顺序执行的执行顺序情况，目前仅为同时并行或同时串行。
 
 
-        rounds_since_task = 0 if used_task else rounds_since_task + 1
-        if get_task_manager().has_open_items() and rounds_since_task >= 3:
+        rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
+        if get_todo_manager().has_open_items() and rounds_since_todo >= 3:
             tool_call_results.insert(0, {"type": "text", "text": "<reminder>Update your tasks.</reminder>"})
 
         print("》》》》》》》》")
@@ -345,7 +343,7 @@ def main():
             continue
         
         if query.strip() == "/tasks":
-            print(get_task_manager().render())
+            print(get_todo_manager().render())
             continue
 
         if query.strip() == "/compact":
