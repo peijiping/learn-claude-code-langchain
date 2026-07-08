@@ -24,6 +24,8 @@ from llm_manage import create_llm_with_tools
 
 from check_permission import check_permission
 
+from hooks import hook_system
+
 try:
     import readline  # 导入 GNU readline 库，用于增强命令行输入功能
     # 关闭终端特殊字符绑定，避免干扰输入
@@ -243,27 +245,39 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         print(f"[本轮回复] {llm_response.content}")
 
         if not hasattr(llm_response, "tool_calls") or not llm_response.tool_calls:
+            #增加一个hook，用于在大模型回复中检查是否需要强制结束当前轮次
+            force = hook_system.trigger("Stop", history_messages)
+            if force:
+                history_messages.append({"role": "user", "content": force})
+                continue
             return
-        
+
         print(f"》》》》》》》》[本轮 tool_calls 数量] {len(llm_response.tool_calls)}")
         print(llm_response.tool_calls)
         print("*********")
         # 所有工具调用都根据 parallel 参数分组，并行组用线程池执行，串行组按顺序执行
         tool_call_results = []
-        # parallel_calls = []
-        sequential_calls = []
         used_task = False
         for tool_call in llm_response.tool_calls:
             if tool_call["name"] in ("task_create", "task_create_many", "task_update", "task_list", "task_get"):
                 used_task = True
             # 目前先不要并行执行，后续要优化并行执行方式，当前无论何种情况都是按顺序串行执行。
             # s03 变更：执行前先经过权限管道检查
-            if not check_permission(tool_call):
-                results.append({"type": "tool_result", "tool_use_id": tool_call["id"],
-                                "content": "Permission denied."})
+            # if not check_permission(tool_call):
+            #     results.append({"type": "tool_result", "tool_use_id": tool_call["id"],
+            #                     "content": "Permission denied."})
+            #     continue
+            # s04 change: hook replaces hard-coded check_permission()
+            blocked = hook_system.trigger("PreToolUse", tool_call)
+            if blocked:
+                tool_call_results.append({"type": "tool_result", "tool_use_id": tool_call["id"],
+                                "content": str(blocked)})
                 continue
             
-            tool_call_results.append(_execute_tool_call(tool_call))
+            tool_call_result = _execute_tool_call(tool_call)
+            tool_call_results.append(tool_call_result)
+            # s04: post hook
+            hook_system.trigger("PostToolUse", tool_call, tool_call_result)  
 
         # 并行执行 parallel=true 的工具,
         # 目前先注释掉，不支持并行执行，因为当前的并行并未考虑到当同时返回多个工具时，多个工具有并行和顺序执行的执行顺序情况，目前仅为同时并行或同时串行。
@@ -337,7 +351,9 @@ def main():
         if query.strip() == "/compact":
             maybe_compact_context(history_messages, session_file, session_manager, manual=True)
             continue
-
+        # s04: pre hook
+        hook_system.trigger("UserPromptSubmit", query)
+        
         history_messages.append(HumanMessage(content=query))
         session_manager.append_message_to_session(session_file, history_messages[-1])
         maybe_compact_context(history_messages, session_file, session_manager)

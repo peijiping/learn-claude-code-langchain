@@ -201,6 +201,11 @@ class SessionManager:
         # 则将其转换为 ToolMessage，避免 OpenAI 报 400
         messages = self._fix_legacy_tool_call_messages(messages)
 
+        # 清理孤儿 AIMessage：上次进程在保存 AIMessage 后、ToolMessage 落盘前
+        # 崩溃 / 被中断，导致 tool_calls 没有匹配的 tool 响应。重新加载整段历史
+        # 直接回传 OpenAI 会触发 400 invalid_request_error。
+        messages = self._sanitize_orphan_tool_calls(messages)
+
         return messages
 
     def _fix_legacy_tool_call_messages(self, messages: list) -> list:
@@ -244,6 +249,58 @@ class SessionManager:
             i += 1
 
         return fixed
+
+    def _sanitize_orphan_tool_calls(self, messages: list) -> list:
+        """
+        清理孤儿 AIMessage：带 tool_calls 但其后没有匹配 ToolMessage 的情况。
+
+        当会话文件因进程崩溃 / Ctrl+C 在 AIMessage 落盘后、ToolMessage 落盘前被
+        中断时，加载整段历史直接回传 OpenAI 会触发：
+            BadRequestError: An assistant message with 'tool_calls' must be
+            followed by tool messages responding to each 'tool_call_id'.
+        本函数扫描消息列表，对每个带 tool_calls 的 AIMessage，验证紧随其后的
+        ToolMessage 是否覆盖了全部 tool_call_id；缺失则丢弃该 AIMessage 以及
+        它后面紧跟的任何错位 ToolMessage。
+        """
+        sanitized = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                expected_ids = {
+                    tc["id"] for tc in msg.tool_calls
+                    if isinstance(tc, dict) and "id" in tc
+                }
+                if not expected_ids:
+                    sanitized.append(msg)
+                    i += 1
+                    continue
+
+                j = i + 1
+                found_ids: set[str] = set()
+                while j < len(messages) and isinstance(messages[j], ToolMessage):
+                    if messages[j].tool_call_id in expected_ids:
+                        found_ids.add(messages[j].tool_call_id)
+                    j += 1
+                    if found_ids == expected_ids:
+                        break
+
+                if found_ids == expected_ids:
+                    sanitized.extend(messages[i:j])
+                    i = j
+                else:
+                    missing = expected_ids - found_ids
+                    dropped_tools = j - i - 1
+                    print(
+                        f"\033[33m[会话修复] 丢弃孤儿 AIMessage "
+                        f"（缺失 tool 响应: {sorted(missing)}，"
+                        f"丢弃错位 tool 消息: {dropped_tools} 条）\033[0m"
+                    )
+                    i = j
+            else:
+                sanitized.append(msg)
+                i += 1
+        return sanitized
 
     def _message_to_json_row(self, message) -> dict:
         """将 LangChain 消息对象转换为 jsonl 行。"""

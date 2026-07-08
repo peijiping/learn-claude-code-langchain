@@ -15,7 +15,7 @@
             "name": "Python Debugger: Full Subagent Langchain",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/agents/full_subagent_langchain.py",
+            "program": "${workspaceFolder}/agents/agent_full_v2.py",
             "console": "integratedTerminal"
         }
     ]
