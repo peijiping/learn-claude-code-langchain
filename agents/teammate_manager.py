@@ -25,12 +25,12 @@ from message_bus import MessageBus,VALID_MSG_TYPES
 import threading
 from pathlib import Path
 from llm_manage import create_llm_with_tools
-from tools_base import safe_path, run_bash, run_read,run_read_pdf, run_write, run_edit,run_glob
+from tool_base import (
+    safe_path,
+    run_read,run_read_pdf, run_write, run_edit,run_glob,
+    WORKDIR,TEAM_DIR,INBOX_DIR,
+)
 
-
-WORKDIR = Path.cwd() / "WorkSpace"
-TEAM_DIR = WORKDIR / ".team"
-INBOX_DIR = WORKDIR / ".inbox"
 # -- TeammateManager: persistent named agents with config.json --
 class TeammateManager:
     """

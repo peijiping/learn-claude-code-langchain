@@ -164,7 +164,7 @@ session_manager.append_message_to_session(session_file, tool_msg)
 |--------|----------|------|
 | 主入口 | `main()` | 初始化会话、处理 CLI 命令、接收用户输入 |
 | 主循环 | `agent_loop()` | 调用 LLM、执行工具、写回工具结果 |
-| 上下文压缩 | `maybe_compact_context()` | 调用 `SessionManager.compact_manager` 检查和压缩 |
+| 上下文压缩 | `session_manager.maybe_compact_context()` | 调用 `SessionManager.compact_manager` 检查和压缩 |
 | 工具执行 | `_execute_tool_call()` | 分发普通工具或 `sub_agent` |
 | 子智能体 | `run_subagent()` | 在独立消息上下文中执行子任务 |
 | 工具注册 | `tools.py` | 定义 `PARENT_TOOLS`, `CHILD_TOOLS_SUBAGENT`, `TOOL_HANDLERS` |

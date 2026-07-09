@@ -382,6 +382,32 @@ class SessionManager:
             print(f"重写会话历史失败: {e}")
             raise
 
+    def maybe_compact_context(
+        self,
+        history_messages: list,
+        session_file: Path,
+        manual: bool = False,
+    ) -> None:
+        """
+        检查并按阈值执行上下文压缩。
+
+        manual=True 用于 /compact：仍遵守触发阈值，未达阈值时只提示当前状态。
+        """
+        stats = self.compact_manager.context_stats(history_messages)
+        if not manual and stats.used_percent < 95:
+            return
+
+        print(
+            f"\033[33m[上下文压缩] 正在检查上下文：当前 {stats.used_tokens}/{stats.max_label} tokens，"
+            f"剩余 {int(stats.remaining_percent)}%\033[0m"
+        )
+        self.compact_messages_if_needed(
+            history_messages,
+            session_file,
+            force=False,
+            announce=True,
+        )
+
     def compact_messages_if_needed(self, messages: list, session_file: Path, force: bool = False, announce: bool = False):
         """
         执行上下文压缩，并在发生变化时同步更新内存和会话文件。

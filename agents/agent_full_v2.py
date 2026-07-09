@@ -165,33 +165,6 @@ llm_with_tools = create_llm_with_tools(MAIN_AGENT_TOOLS)
 MAX_AGENT_ITERATIONS = 100
 
 
-def maybe_compact_context(
-    history_messages: list,
-    session_file: Path,
-    session_manager: SessionManager,
-    manual: bool = False,
-) -> None:
-    """
-    检查并按阈值执行上下文压缩。
-
-    manual=True 用于 /compact：仍遵守触发阈值，未达阈值时只提示当前状态。
-    """
-    stats = session_manager.compact_manager.context_stats(history_messages)
-    if not manual and stats.used_percent < 95:
-        return
-
-    print(
-        f"\033[33m[上下文压缩] 正在检查上下文：当前 {stats.used_tokens}/{stats.max_label} tokens，"
-        f"剩余 {int(stats.remaining_percent)}%\033[0m"
-    )
-    session_manager.compact_messages_if_needed(
-        history_messages,
-        session_file,
-        force=False,
-        announce=True,
-    )
-
-
 def _execute_tool_call(tool_call: dict) -> dict:
     """执行单个工具调用（sub_agent 或普通工具），返回结果字典"""
     tool_name = tool_call["name"]
@@ -245,7 +218,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             history_messages.append({"role": "assistant", "content": "Noted background results."})
 
         # 在调用 LLM 前检查上下文，达到阈值时阻塞执行压缩并同步会话文件。
-        maybe_compact_context(history_messages, session_file, session_manager)
+        session_manager.maybe_compact_context(history_messages, session_file)
 
         llm_response = llm_with_tools.invoke(history_messages)
         # 加入大模型回复到历史消息中
@@ -358,14 +331,14 @@ def main():
             continue
 
         if query.strip() == "/compact":
-            maybe_compact_context(history_messages, session_file, session_manager, manual=True)
+            session_manager.maybe_compact_context(history_messages, session_file, manual=True)
             continue
         # s04: pre hook
         hook_system.trigger("UserPromptSubmit", query)
         
         history_messages.append(HumanMessage(content=query))
         session_manager.append_message_to_session(session_file, history_messages[-1])
-        maybe_compact_context(history_messages, session_file, session_manager)
+        session_manager.maybe_compact_context(history_messages, session_file)
         # 执行智能体主循环
         agent_loop(history_messages, session_file, session_manager)
         response_content = history_messages[-1].content
