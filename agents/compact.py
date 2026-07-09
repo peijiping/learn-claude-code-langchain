@@ -377,7 +377,7 @@ class CompactManager:
         sections = []
         reloaded = []
         for name in skill_names:
-            content = self.skill_loader.get_content(name)
+            content = self.skill_loader.load_skill(name)
             if isinstance(content, str) and not content.startswith("Error:"):
                 sections.append(content)
                 reloaded.append(name)

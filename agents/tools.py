@@ -21,16 +21,18 @@ from tool_base import (
     BASE_TOOL,
     BASE_TOOL_HANDLERS,
     ROOT_DIR,
+    SKILLS_DIR,
     TODO_FILE,
     INBOX_DIR,
     TEAM_DIR,
-    SKILL_LOADER,
     WORKDIR,
+    CHAT_HISTORY_DIR,
 )
 
 
 
-
+# 创建全局 SkillLoader 实例
+SKILLS = SkillLoader(SKILLS_DIR)
 # 创建全局 TodoManager 实例
 TODO_MANAGER = TodoManager(TODO_FILE)
 # 创建全局 BackgroundManager 实例
@@ -39,11 +41,6 @@ BACKGROUND_MANAGER = BackgroundManager()
 BUS = MessageBus(INBOX_DIR)
 # 创建全局 TeammateManager 实例
 TEAM = TeammateManager(TEAM_DIR)
-
-
-def get_todo_manager() -> TodoManager:
-    """返回全局 TodoManager 实例。"""
-    return TODO_MANAGER
 
 
 # ============================================================
@@ -55,7 +52,8 @@ def get_todo_manager() -> TodoManager:
 TOOL_HANDLERS = {
     **BASE_TOOL_HANDLERS,
     "todo":        lambda **kw: TODO_MANAGER.update(kw["items"], kw.get("fresh_start", False)),
- 
+    "load_skill":  lambda **kw: SKILLS.load_skill(kw["name"]),
+    "list_skills": lambda **kw: SKILLS.list_skills(),
 }
 
 # ============================================================
@@ -75,6 +73,12 @@ TOOLS = [
          }, "required": ["text", "status"]}},
          "fresh_start": {"type": "boolean", "default": False, "description": "True 时表示开始新计划——先清掉当前列表里所有已完成的任务，再用 items 替换整个列表。"},
      }, "required": ["items"]}
+    },
+    {"name": "load_skill", "description": "加载指定名称的专业技能（skill）知识。",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "要加载的专业技能（skill）名称"}}, "required": ["name"]}
+    },
+    {"name": "list_skills", "description": "获取当前所有可用技能（skill）的名称和简短描述列表，用于了解当前会话支持哪些技能。",
+     "input_schema": {"type": "object", "properties": {}}
     },
 ]
 

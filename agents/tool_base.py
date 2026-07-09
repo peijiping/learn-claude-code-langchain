@@ -30,10 +30,17 @@ TEAM_DIR = WORKDIR / ".team"
 # 收件箱目录
 INBOX_DIR = WORKDIR / ".inbox"
 
+#对话历史目录
+CHAT_HISTORY_DIR = WORKDIR / ".chathistory"
 
 
-# 创建全局 SkillLoader 实例
-SKILL_LOADER = SkillLoader(SKILLS_DIR)
+
+
+CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+
+
+
 
 
 
@@ -269,8 +276,7 @@ BASE_TOOL_HANDLERS = {
     "run_write": lambda **kw: run_write(kw["path"], kw["content"]),
     "run_edit":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     "run_glob":  lambda **kw: run_glob(kw["pattern"]),
-    "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
-    "list_skills": lambda **kw: SKILL_LOADER.get_descriptions(),
+    
 }
 
 # ============================================================
@@ -303,12 +309,7 @@ BASE_TOOL = [
     {"name": "run_glob","description": "使用 glob 模式匹配文件路径。",
      "input_schema": {"type": "object","properties": {"pattern": {"type": "string","description": "要匹配的文件路径模式"}}, "required": ["pattern"]}
     },
-    {"name": "load_skill", "description": "加载指定名称的专业技能（skill）知识。",
-     "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "要加载的专业技能（skill）名称"}}, "required": ["name"]}
-    },
-    {"name": "list_skills", "description": "获取当前所有可用技能（skill）的名称和简短描述列表，用于了解当前会话支持哪些技能。",
-     "input_schema": {"type": "object", "properties": {}}
-    },
+    
 ]
 
 
