@@ -11,8 +11,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
 from session_manage import SessionManager
-from subagent import run_subagent
+from subagent import SubAgent
 from tools import (
+    BASE_TOOL,
     MAIN_AGENT_TOOLS,
     TOOL_HANDLERS,
     WORKDIR,
@@ -24,7 +25,11 @@ from llm_manage import create_llm_with_tools
 
 from check_permission import check_permission
 
-from hooks import hook_system
+from hooks import HookSystem
+
+# 钩子实例：主循环的 hook_system 在模块级只实例化一次
+hook_system = HookSystem()
+hook_system.register_default_hooks()
 
 try:
     import readline  # 导入 GNU readline 库，用于增强命令行输入功能
@@ -47,6 +52,10 @@ load_dotenv(override=True)
 #对话历史目录
 CHAT_HISTORY_DIR = WORKDIR / ".chathistory"
 CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+# 子智能体单实例：复用工具集/处理器/hooks，避免每次 sub_agent 调用都重新实例化
+SUB_AGENT_RUNNER = SubAgent(BASE_TOOL, TOOL_HANDLERS, hook_system)
+
 
 # 系统prompt
 SYSTEM = f"""
@@ -192,7 +201,9 @@ def _execute_tool_call(tool_call: dict) -> dict:
     if tool_name == "sub_agent":
         allowed_tools = tool_args.get("allowed_tools")
         print(f">> sub_agent ({tool_args.get('description', '')}): {tool_args['prompt'][:80]}")
-        tool_output = run_subagent(tool_args["prompt"], allowed_tools=allowed_tools)
+        tool_output = SUB_AGENT_RUNNER.spawn_subagent(
+            tool_args["prompt"], allowed_tools=allowed_tools
+        )
         print(f">> sub_agent 执行结果: {tool_output[:200]}...")
     elif tool_name in TOOL_HANDLERS:
         print(f">> 工具 {tool_name}({tool_args})")
@@ -271,7 +282,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
                 tool_call_results.append({"type": "tool_result", "tool_use_id": tool_call["id"],
                                 "content": str(blocked)})
                 continue
-            
+            # 执行工具调用或 sub_agent 调用
             tool_call_result = _execute_tool_call(tool_call)
             tool_call_results.append(tool_call_result)
             # s04: post hook

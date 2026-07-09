@@ -24,10 +24,12 @@ hooks.py — Agent 钩子系统 (Hook System)
 
 对外使用 (Public API)
 ─────────────────────
-模块底部导出一个默认实例 `hook_system`,主循环直接:
-    from hooks import hook_system
-    hook_system.trigger("PreToolUse", tool_call)
-即可。如需隔离(测试或多 Agent 场景),也可自行 new HookSystem()。
+本模块只提供 `HookSystem` 类,不提供默认实例。各引用方需自行:
+    from hooks import HookSystem
+    hook_system = HookSystem()
+    hook_system.register_default_hooks()
+如需隔离(测试或多 Agent 场景),也可为不同引用方 new 独立的 HookSystem,
+互不干扰,各自维护独立的注册表与策略。
 
 设计动机 (Why Hooks)
 ────────────────────
@@ -309,17 +311,3 @@ class HookSystem:
         self.register(self.POST_TOOL_USE,      self.large_output_hook)    # 大输出告警
         self.register(self.STOP,               self.summary_hook)         # 会话结束摘要
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  默认实例 (Default Singleton)
-# ═══════════════════════════════════════════════════════════════════════════
-# 对外暴露一个开箱即用的单例 `hook_system`,主循环直接 import 后调用
-# `hook_system.trigger(...)` 即可,无需关心注册细节。
-#
-# 如需隔离(测试或多 Agent 场景),可自行执行:
-#     my_system = HookSystem()
-#     my_system.register_default_hooks()
-# 这两个 HookSystem 实例互不干扰,各自维护独立的注册表与策略。
-
-hook_system = HookSystem()
-hook_system.register_default_hooks()

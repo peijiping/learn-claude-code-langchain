@@ -12,127 +12,157 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from llm_manage import create_llm_with_tools
-from tools import BASE_TOOL, TOOL_HANDLERS, WORKDIR
+from tools import WORKDIR
+from hooks import HookSystem
 
 
-DEFAULT_SYSTEM_PROMPT = f"""你是一个通用型子智能体，工作目录是 {WORKDIR}。
-
-## 核心规则
-1. **任务导向**：严格按照任务描述完成指定工作，不要发散
-2. **输出控制**：每次工具调用都要限制输出量。读取文件时使用 limit 参数，bash 命令用 | head 限制行数
-3. **PDF 读取**：必须使用 read_pdf 工具读取 PDF，不要使用 strings/cat 等命令
-4. **摘要优先**：你的输出是给主智能体看的，只返回关键发现和结果，不要返回原始数据
-5. **安全操作**：执行写入或删除操作前，确认目标路径在工作目录内
-6. **看板边界**：不要创建或更新任务看板；不要调用 task_create、task_create_many 或 task_update；任务看板由主智能体统一维护
-
-## 输出格式
-完成任务后，用以下格式返回摘要：
-### 结果
-[任务完成的关键结果]
-### 要点
-- [关键发现或实现细节]
-### 注意
-[需要注意的问题或后续工作]"""
-
-
-def _extract_content(response) -> str:
-    """从 LLM 响应中提取文本内容"""
-    if not hasattr(response, "content"):
-        return ""
-    if isinstance(response.content, list):
-        return "".join(b.text for b in response.content if hasattr(b, "text"))
-    return str(response.content) if response.content else ""
-
-
-def run_subagent(
-    prompt: str,
-    system_prompt: str | None = None,
-    allowed_tools: list[str] | None = None,
-) -> str:
+class SubAgent:
     """
-    运行通用型子智能体任务
+    通用型子智能体。
 
-    该函数创建一个独立的子智能体来执行特定任务，具有以下特点：
-    1. 独立的上下文环境，不受父智能体上下文污染
-    2. 默认拥有全部工具权限，通过 prompt 引导行为
-    3. 可通过 system_prompt 自定义角色和行为约束
-    4. 可通过 allowed_tools 限制可用工具范围
-    5. 循环调用工具直到完成或达到安全限制（30轮）
-    6. 只返回最终的任务摘要，而非完整执行过程
-
-    参数:
-        prompt: 需要子智能体执行的任务描述
-        system_prompt: 自定义系统提示，为 None 时使用默认通用提示
-        allowed_tools: 允许使用的工具名称列表，为 None 时使用全部工具。
-                       例如 ["bash", "read_file", "read_pdf"] 限制为只读工具集
-
-    返回:
-        str: 任务执行结果的摘要文本，如果无结果则返回 "(no summary)"
+    每次 run() 调用都会在隔离的消息上下文里独立循环，只把最终摘要回传给
+    调用方。默认拥有全部工具权限，通过 system_prompt 引导行为，
+    也可通过 allowed_tools 在单次调用时收窄工具集。
     """
-    if allowed_tools is not None:
-        sub_tools = [t for t in BASE_TOOL if t["name"] in allowed_tools]
-    else:
-        sub_tools = BASE_TOOL
 
-    sub_system = system_prompt or DEFAULT_SYSTEM_PROMPT
+    DEFAULT_SYSTEM_PROMPT = f"""你是一个通用型子智能体，工作目录是 {WORKDIR}。
+        ## 核心规则
+        1. **任务导向**：严格按照任务描述完成指定工作，不要发散
+        2. **输出控制**：每次工具调用都要限制输出量。读取文件时使用 limit 参数，bash 命令用 | head 限制行数
+        3. **PDF 读取**：必须使用 read_pdf 工具读取 PDF，不要使用 strings/cat 等命令
+        4. **摘要优先**：你的输出是给主智能体看的，只返回关键发现和结果，不要返回原始数据
+        5. **安全操作**：执行写入或删除操作前，确认目标路径在工作目录内
+        6. **看板边界**：不要创建或更新任务看板；不要调用 task_create、task_create_many 或 task_update；任务看板由主智能体统一维护
 
-    sub_messages = [SystemMessage(content=sub_system)]
-    sub_messages.append(HumanMessage(content=prompt))
-    sub_llm_with_tools = create_llm_with_tools(sub_tools)
+        ## 输出格式
+        完成任务后，用以下格式返回摘要：
+        ### 结果
+        [任务完成的关键结果]
+        ### 要点
+        - [关键发现或实现细节]
+        ### 注意
+        [需要注意的问题或后续工作]"""
 
-    tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
-    print(f"  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...")
+    MAX_ITERATIONS = 100
 
-    for iteration in range(100):
-        try:
-            sub_response = sub_llm_with_tools.invoke(sub_messages)
-        except Exception as e:
-            error_msg = f"子智能体 API 调用失败 (第 {iteration + 1} 轮): {type(e).__name__}: {e}"
-            print(f"  [subagent] {error_msg}")
-            return error_msg
+    def __init__(self, base_tools: list, tool_handlers: dict, hook_system: HookSystem | None = None):
+        self.base_tools = base_tools
+        self.tool_handlers = tool_handlers
+        # 未显式传入时,SubAgent 内部自实例化一次独立的 hook_system
+        if hook_system is None:
+            hook_system = HookSystem()
+            hook_system.register_default_hooks()
+        self.hook_system = hook_system
 
-        sub_messages.append(sub_response)
+    @staticmethod
+    def _extract_content(response) -> str:
+        """从 LLM 响应中提取文本内容"""
+        if not hasattr(response, "content"):
+            return ""
+        if isinstance(response.content, list):
+            return "".join(b.text for b in response.content if hasattr(b, "text"))
+        return str(response.content) if response.content else ""
 
-        if not hasattr(sub_response, "tool_calls") or not sub_response.tool_calls:
-            content = _extract_content(sub_response)
-            return content or "(no summary)"
+    def spawn_subagent(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        allowed_tools: list[str] | None = None,
+    ) -> str:
+        """
+        执行一次子智能体任务。
 
-        for tool_call in sub_response.tool_calls:
-            tool_name = tool_call["name"]
-            tool_id = tool_call["id"]
-            if tool_call["name"]:
-                handler = TOOL_HANDLERS.get(tool_name)
-                if handler:
-                    try:
-                        output = handler(**tool_call["args"])
-                    except Exception as e:
-                        output = f"Error executing {tool_name}: {e}"
+        特点：
+        1. 独立的上下文环境，不受父智能体上下文污染
+        2. 默认拥有全部工具权限，通过 prompt 引导行为
+        3. 可通过 system_prompt 自定义角色和行为约束
+        4. 可通过 allowed_tools 限制可用工具范围
+        5. 循环调用工具直到完成或达到安全限制（MAX_ITERATIONS 轮）
+        6. 只返回最终的任务摘要，而非完整执行过程
+
+        参数:
+            prompt: 需要子智能体执行的任务描述
+            system_prompt: 自定义系统提示，为 None 时使用 DEFAULT_SYSTEM_PROMPT
+            allowed_tools: 允许使用的工具名称列表，为 None 时使用全部工具。
+                           例如 ["bash", "read_file", "read_pdf"] 限制为只读工具集
+
+        返回:
+            str: 任务执行结果的摘要文本，如果无结果则返回 "(no summary)"
+        """
+        if allowed_tools is not None:
+            sub_tools = [t for t in self.base_tools if t["name"] in allowed_tools]
+        else:
+            sub_tools = self.base_tools
+
+        sub_system = system_prompt or self.DEFAULT_SYSTEM_PROMPT
+
+        sub_messages = [SystemMessage(content=sub_system)]
+        sub_messages.append(HumanMessage(content=prompt))
+        sub_llm_with_tools = create_llm_with_tools(sub_tools)
+
+        tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
+        print(f"  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...")
+
+        sub_response = None
+        for iteration in range(self.MAX_ITERATIONS):
+            try:
+                sub_response = sub_llm_with_tools.invoke(sub_messages)
+            except Exception as e:
+                error_msg = f"子智能体 API 调用失败 (第 {iteration + 1} 轮): {type(e).__name__}: {e}"
+                print(f"  [subagent] {error_msg}")
+                return error_msg
+
+            sub_messages.append(sub_response)
+
+            if not hasattr(sub_response, "tool_calls") or not sub_response.tool_calls:
+                content = self._extract_content(sub_response)
+                return content or "(no summary)"
+
+            for tool_call in sub_response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_id = tool_call["id"]
+
+                if tool_call["name"]:
+                    # hooks: PreToolUse
+                    blocked = self.hook_system.trigger("PreToolUse", tool_call)
+                    if blocked:
+                        sub_messages.append({"type": "tool_result", "tool_use_id": tool_call["id"],
+                                             "content": str(blocked)})
+                        continue
+                    handler = self.tool_handlers.get(tool_name)
+                    if handler:
+                        try:
+                            output = handler(**tool_call["args"])
+                        except Exception as e:
+                            output = f"Error executing {tool_name}: {e}"
+                        # hooks: PostToolUse
+                        self.hook_system.trigger("PostToolUse", tool_call, output)
+                    else:
+                        output = f"Unknown tool: {tool_name}"
+                    result = {
+                        "type": "tool_result",
+                        "tool_name": tool_name,
+                        "tool_args": tool_call["args"],
+                        "tool_id": tool_id,
+                        "tool_output": str(output),
+                    }
                 else:
-                    output = f"Unknown tool: {tool_name}"
-                result = {
-                    "type": "tool_result",
-                    "tool_name": tool_name,
-                    "tool_args": tool_call["args"],
-                    "tool_id": tool_id,
-                    "tool_output": str(output),
-                }
-            else:
-                result = {
-                    "type": "tool_result",
-                    "tool_id": tool_id,
-                    "tool_output": "Error: tool call missing name",
-                }
-            sub_messages.append(
-                ToolMessage(
-                    content=json.dumps(result, ensure_ascii=False),
-                    tool_call_id=tool_id,
+                    result = {
+                        "type": "tool_result",
+                        "tool_id": tool_id,
+                        "tool_output": "Error: tool call missing name",
+                    }
+                sub_messages.append(
+                    ToolMessage(
+                        content=json.dumps(result, ensure_ascii=False),
+                        tool_call_id=tool_id,
+                    )
                 )
-            )
 
-        print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_response.tool_calls)} 个工具调用")
+            print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_response.tool_calls)} 个工具调用")
 
-    # 30 轮到达上限，尝试从最后一轮响应中提取内容返回
-    content = _extract_content(sub_response)
-    if content:
-        return f"[达到最大轮次限制，返回最后一轮摘要]\n{content}"
-    return "(no summary: 达到最大轮次限制且最后一轮无内容)"
+        # 达到最大轮次，尝试从最后一轮响应中提取内容返回
+        content = self._extract_content(sub_response) if sub_response else ""
+        if content:
+            return f"[达到最大轮次限制，返回最后一轮摘要]\n{content}"
+        return "(no summary: 达到最大轮次限制且最后一轮无内容)"
