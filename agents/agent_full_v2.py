@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from session_manage import SessionManager
 from subagent import run_subagent
 from tools import (
-    PARENT_TOOLS,
+    MAIN_AGENT_TOOLS,
     TOOL_HANDLERS,
     WORKDIR,
     SKILL_LOADER,
@@ -149,7 +149,7 @@ Skills 可使用列表：
 {SKILL_LOADER.get_descriptions()}
 """
 # 创建绑定了工具的 LLM 实例
-llm_with_tools = create_llm_with_tools(PARENT_TOOLS)
+llm_with_tools = create_llm_with_tools(MAIN_AGENT_TOOLS)
 
 
 # 最大智能体循环迭代次数，防止无限循环导致程序卡死

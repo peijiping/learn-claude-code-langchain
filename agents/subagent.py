@@ -12,7 +12,7 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from llm_manage import create_llm_with_tools
-from tools import CHILD_TOOLS_SUBAGENT, TOOL_HANDLERS, WORKDIR
+from tools import BASE_TOOL, TOOL_HANDLERS, WORKDIR
 
 
 DEFAULT_SYSTEM_PROMPT = f"""你是一个通用型子智能体，工作目录是 {WORKDIR}。
@@ -70,9 +70,9 @@ def run_subagent(
         str: 任务执行结果的摘要文本，如果无结果则返回 "(no summary)"
     """
     if allowed_tools is not None:
-        sub_tools = [t for t in CHILD_TOOLS_SUBAGENT if t["name"] in allowed_tools]
+        sub_tools = [t for t in BASE_TOOL if t["name"] in allowed_tools]
     else:
-        sub_tools = CHILD_TOOLS_SUBAGENT
+        sub_tools = BASE_TOOL
 
     sub_system = system_prompt or DEFAULT_SYSTEM_PROMPT
 
