@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from compact import CompactManager
+from context_compact import ContextCompactManager
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 
@@ -37,7 +37,10 @@ class SessionManager:
         """
         self.chat_history_dir = chat_history_dir
         self.system_prompt = system_prompt
-        self.compact_manager = CompactManager()
+        self.compact_manager = ContextCompactManager(
+            transcript_dir=chat_history_dir.parent / ".transcripts",
+            tool_results_dir=chat_history_dir.parent / ".task_outputs" / "tool-results",
+        )
         self.chat_history_dir.mkdir(parents=True, exist_ok=True)
 
     def estimate_tokens(self, messages: list) -> int:
@@ -87,7 +90,7 @@ class SessionManager:
 
     def trim_messages_to_limit(self, messages: list) -> list:
         """
-        兼容旧调用入口：委托 CompactManager 按当前 MAX_CONTEXT_TOKENS 配置压缩。
+        兼容旧调用入口：委托 ContextCompactManager 按当前 MAX_CONTEXT_TOKENS 配置压缩。
 
         Args:
             messages: 原始消息列表
@@ -102,7 +105,7 @@ class SessionManager:
         messages: list
     ) -> list:
         """
-        兼容旧调用入口：达到阈值时委托 CompactManager 执行工具剪枝和摘要压缩。
+        兼容旧调用入口：达到阈值时委托 ContextCompactManager 执行四层压缩。
 
         Args:
             messages: 原始消息列表
@@ -436,14 +439,16 @@ class SessionManager:
 
         ops = result.operations
         parts = []
-        if ops.get("tool_messages_pruned"):
-            parts.append(f"剪枝工具消息 {ops['tool_messages_pruned']} 条")
-        if ops.get("legacy_tool_outputs_pruned"):
-            parts.append(f"剪枝旧格式工具输出 {ops['legacy_tool_outputs_pruned']} 条")
+        if ops.get("tool_results_persisted"):
+            parts.append(f"落盘超大工具输出 {ops['tool_results_persisted']} 条")
+        if ops.get("messages_snip_compacted"):
+            parts.append(f"裁掉中间消息 {ops['messages_snip_compacted']} 条")
+        if ops.get("tool_results_micro_compacted"):
+            parts.append(f"占位旧工具结果 {ops['tool_results_micro_compacted']} 条")
         if ops.get("summary_messages_replaced"):
-            parts.append(f"摘要替换历史消息 {ops['summary_messages_replaced']} 条")
-        if ops.get("skills_reloaded"):
-            parts.append(f"重新加载 skill：{', '.join(ops['skills_reloaded'])}")
+            parts.append(f"LLM 摘要替换 {ops['summary_messages_replaced']} 条")
+        if ops.get("reactive_compact_triggered"):
+            parts.append("触发 reactive 兜底压缩")
         summary = "；".join(parts) if parts else "已整理上下文"
         after_text = f"{after.used_tokens}/{after.max_label} tokens，剩余 {int(after.remaining_percent)}%" if after else "未知"
         print(f"\033[33m[上下文压缩完成] {summary}；压缩后 {after_text}\033[0m")

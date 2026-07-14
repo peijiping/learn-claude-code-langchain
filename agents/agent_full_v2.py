@@ -189,7 +189,6 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
 
 def main():
     session_manager = SessionManager(CHAT_HISTORY_DIR, SYSTEM)
-    session_manager.compact_manager.skill_loader = SKILLS
     session_num, session_file, history_messages = session_manager.init_session()
     
     while True:
