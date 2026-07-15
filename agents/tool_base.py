@@ -33,6 +33,11 @@ INBOX_DIR = WORKDIR / ".inbox"
 #对话历史目录
 CHAT_HISTORY_DIR = WORKDIR / ".chathistory"
 
+# L4 / reactive 时 transcript 落盘的目录名
+TRANSCRIPT_DIRNAME = WORKDIR / ".transcripts"
+# L3 落盘大 tool_result 的目录名
+TOOL_RESULTS_DIRNAME = WORKDIR / ".task_outputs/tool-results"
+
 
 
 

@@ -106,7 +106,7 @@ def agent_loop(messages):
 
 中文学习笔记放在 `agents/anthropic/docs/zh/`。
 
-### 🚧 v2（进行中） —— 20 节课，更完整的 Harness
+### 🚧 v2（s01–s08 已学完，s09+ 待学） —— 20 节课，更完整的 Harness
 
 代码在 [`agents/anthropic_v2/`](./agents/anthropic_v2) 目录。
 

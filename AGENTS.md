@@ -61,3 +61,5 @@ agent_loop(messages):
 - 别删 `agents/anthropic/` 和 `agents/anthropic_v2/` 下的教程代码——它们是学习对照材料，只读不动。
 - 当我问"看教程"时，去 `agents/anthropic/`（v1）或 `agents/anthropic_v2/`（v2）找对应的课程代码。
 - 我自己的实现若有 bug，优先修 `agents/agent_full_v2.py` 及其同级模块。
+- **路径定义统一管理**：所有工作目录相关常量（`WORKDIR`、`TODO_DIR`、`TEAM_DIR`、`INBOX_DIR`、`CHAT_HISTORY_DIR`、`TRANSCRIPT_DIRNAME`、`TOOL_RESULTS_DIRNAME` 等）一律在 `agents/tool_base.py` 顶部集中定义，其他模块通过 `from tool_base import ...` 引用，禁止在业务模块内重复声明。
+- **可调参数走 `.env`**：纯路径之外的运行时可调参数（如 `context_compact.py` 中的 `CONTEXT_LIMIT_CHARS`、`SNIP_MAX_MESSAGES`、`SUMMARY_TRIGGER_RATIO`、`MAX_REACTIVE_RETRIES` 等）一律声明在 `.env`（默认值同时给到 `.env.example` 的注释示例），代码中通过 `os.environ.get(KEY) or default`（整数用 `int(...)`、浮点用 `float(...)`，与 `llm_manage.py` 风格保持一致）内联读取；新增/修改这类参数时，必须同步更新 `.env` 与 `.env.example`。

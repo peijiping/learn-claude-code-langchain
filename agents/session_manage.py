@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from context_compact import ContextCompactManager
+from context_compact import ContextCompact
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 
@@ -37,7 +37,7 @@ class SessionManager:
         """
         self.chat_history_dir = chat_history_dir
         self.system_prompt = system_prompt
-        self.compact_manager = ContextCompactManager(
+        self.compact_manager = ContextCompact(
             transcript_dir=chat_history_dir.parent / ".transcripts",
             tool_results_dir=chat_history_dir.parent / ".task_outputs" / "tool-results",
         )
@@ -90,7 +90,7 @@ class SessionManager:
 
     def trim_messages_to_limit(self, messages: list) -> list:
         """
-        兼容旧调用入口：委托 ContextCompactManager 按当前 MAX_CONTEXT_TOKENS 配置压缩。
+        兼容旧调用入口：委托 ContextCompact 按当前 MAX_CONTEXT_TOKENS 配置压缩。
 
         Args:
             messages: 原始消息列表
@@ -105,7 +105,7 @@ class SessionManager:
         messages: list
     ) -> list:
         """
-        兼容旧调用入口：达到阈值时委托 ContextCompactManager 执行四层压缩。
+        兼容旧调用入口：达到阈值时委托 ContextCompact 执行四层压缩。
 
         Args:
             messages: 原始消息列表
