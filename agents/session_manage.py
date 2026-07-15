@@ -43,78 +43,9 @@ class SessionManager:
         )
         self.chat_history_dir.mkdir(parents=True, exist_ok=True)
 
-    def estimate_tokens(self, messages: list) -> int:
-        """
-        估算消息列表的 token 数量
-
-        使用简单的估算方法：
-        - 中文：每个字符约 1.5 tokens
-        - 英文：每个单词约 1.3 tokens
-        - 加上消息格式的开销（每条消息约 4 tokens）
-
-        Args:
-            messages: 消息列表
-
-        Returns:
-            估算的 token 数量
-        """
-        return self.compact_manager.estimate_tokens(messages)
-
-    def get_token_usage_percent(self, messages: list) -> float:
-        """
-        计算已使用 token 占上下文窗口的百分比
-
-        Args:
-            messages: 消息列表
-
-        Returns:
-            已使用百分比 (0-100)
-        """
-        return self.compact_manager.context_stats(messages).used_percent
-
-    def get_remaining_token_percent(self, messages: list) -> float:
-        """
-        计算剩余 token 占上下文窗口的百分比
-
-        Args:
-            messages: 消息列表
-
-        Returns:
-            剩余百分比 (0-100)，超过限制时返回 0
-        """
-        return self.compact_manager.context_stats(messages).remaining_percent
-
     def format_context_label(self, messages: list) -> str:
         """格式化当前上下文窗口显示信息。"""
         return self.compact_manager.format_context_label(messages)
-
-    def trim_messages_to_limit(self, messages: list) -> list:
-        """
-        兼容旧调用入口：委托 ContextCompact 按当前 MAX_CONTEXT_TOKENS 配置压缩。
-
-        Args:
-            messages: 原始消息列表
-
-        Returns:
-            压缩后的消息列表
-        """
-        return self.compact_manager.compact_if_needed(messages, force=True).messages
-
-    def trim_messages_with_tool_compression(
-        self,
-        messages: list
-    ) -> list:
-        """
-        兼容旧调用入口：达到阈值时委托 ContextCompact 执行四层压缩。
-
-        Args:
-            messages: 原始消息列表
-
-        Returns:
-            处理后的消息列表
-        """
-        return self.compact_manager.compact_if_needed(messages).messages
-
     def get_latest_session(self) -> tuple[int, Optional[Path]]:
         """
         获取最新的会话编号和文件路径
@@ -207,7 +138,7 @@ class SessionManager:
         # 清理孤儿 AIMessage：上次进程在保存 AIMessage 后、ToolMessage 落盘前
         # 崩溃 / 被中断，导致 tool_calls 没有匹配的 tool 响应。重新加载整段历史
         # 直接回传 OpenAI 会触发 400 invalid_request_error。
-        messages = self._sanitize_orphan_tool_calls(messages)
+        # messages = self._sanitize_orphan_tool_calls(messages)
 
         return messages
 

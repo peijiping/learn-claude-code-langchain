@@ -197,7 +197,17 @@ def main():
             query = input(f"\033[36m[session_{session_num} ({context_label})] >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
-        
+        #请在此处增加/help命令，用于显示所有可用命令
+        if query.strip().lower() == "/help":
+            print("可用命令:")
+            print("/q: 退出会话")
+            print("/newsession: 创建新会话")
+            print("/clearsession: 清空当前会话")
+            print("/tasks: 显示当前任务")
+            print("/compact: 压缩上下文")
+            print("/skills: 显示当前技能")
+            continue
+
         if query.strip().lower() in ("/q", "/exit", ""):
             break
         

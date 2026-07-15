@@ -11,8 +11,10 @@ tools.py - 工具定义和实现模块
 其他模块可以通过导入此模块来使用这些工具。
 """
 
+import os
 from pathlib import Path
-from skills import SkillLoader
+import subprocess
+import glob as g
 
 
 # 根目录
@@ -44,6 +46,39 @@ TOOL_RESULTS_DIRNAME = WORKDIR / ".task_outputs/tool-results"
 CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
 
+
+# =============================================================================
+# Bash命令执行函数
+# =============================================================================
+
+def _is_binary_content(text: str) -> bool:
+    """检测输出是否包含大量二进制垃圾数据"""
+    if not text or len(text) < 100:
+        return False
+    sample = text[:2000]
+    printable = sum(1 for c in sample if c.isprintable() or c in '\n\r\t')
+    if (len(sample) - printable) / len(sample) > 0.3:
+        return True
+    binary_patterns = [
+        'endobj', 'endstream', '/FontDescriptor', '/CIDToGIDMap',
+        '/Type /Font', '/Subtype /CIDFont', '/BaseFont /',
+        '0 obj<<', '/FontFile2', '/ToUnicode',
+    ]
+    pattern_hits = sum(1 for p in binary_patterns if p in sample)
+    if pattern_hits >= 2:
+        return True
+    return False
+
+
+def _smart_truncate(text: str, max_chars: int = 10000) -> str:
+    """智能截断：保留首尾，中间用省略标记替代"""
+    if len(text) <= max_chars:
+        return text
+    head_size = max_chars // 2
+    tail_size = max_chars // 4
+    head = text[:head_size]
+    tail = text[-tail_size:]
+    return f"{head}\n\n... [输出已截断，共 {len(text)} 字符，保留首 {head_size} + 尾 {tail_size} 字符] ...\n\n{tail}"
 
 
 
@@ -105,11 +140,11 @@ def run_bash(command: str) -> str:
             timeout=120
         )
         out = (r.stdout + r.stderr).strip()
-        if is_binary_content(out):
+        if _is_binary_content(out):
             return "Error: 输出包含大量二进制数据，请使用专用工具（如 pymupdf 读取 PDF）而非 strings/cat/hexdump 等原始命令。"
         if r.returncode != 0:
-            return f"Error: 命令执行失败，返回码 {r.returncode}\n{smart_truncate(out, 50000)}"
-        return smart_truncate(out, 50000) if out else "(command executed successfully, no output)"
+            return f"Error: 命令执行失败，返回码 {r.returncode}\n{_smart_truncate(out, 50000)}"
+        return _smart_truncate(out, 50000) if out else "(command executed successfully, no output)"
     except subprocess.TimeoutExpired:
         # 命令执行超时（超过120秒）
         return "Error: Timeout (120s)"
@@ -257,7 +292,6 @@ def run_glob(pattern: str) -> str:
         成功：匹配的文件路径列表（每个路径占一行）
         失败：格式 "Error: {异常信息}"
     """
-    import glob as g
     try:
         results = []
         for match in g.glob(pattern, root_dir=WORKDIR):
