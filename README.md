@@ -249,6 +249,20 @@ cd agents/anthropic_v2/web && npm install && npm run dev
 - **早期版本归档**：[`agents/history/`](./agents/history) —— v1 / v2 旧实现留档
 - **实验留档**：[`WorkSpace/`](./WorkSpace) —— 用 agent 跑过的实际任务
 
+## 踩坑记录
+
+> 实际跑起来遇到的 bug 与解法，挑值得记的写这里。
+
+### 会话孤儿消息（Orphan Tool Calls）
+
+- **症状**：加载历史会话后回传 OpenAI，触发 `BadRequestError: An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'`。
+- **根因**：进程在 `AIMessage` 落盘之后、`ToolMessage` 落盘之前被中断（崩溃 / Ctrl+C），导致 jsonl 里出现了"带 `tool_calls` 但没人接话"的孤立消息。
+- **解法**：[`agents/session_manage.py::_sanitize_orphan_tool_calls`](./agents/session_manage.py#L187) 在加载时扫描，对每个带 `tool_calls` 的 `AIMessage` 校验紧随其后的 `ToolMessage` 是否覆盖了全部 `tool_call_id`，缺失则把该 `AIMessage` 以及后续错位的 `ToolMessage` 一起丢弃。
+- **为什么删而不是补**：被中断的 tool 实际执行结果未知，编造 `ToolMessage` content 等于喂给模型假数据，反而污染后续推理；删除是唯一安全选择。
+- **教训**：上策是从源头消灭——在 `_save_message` 层调整落盘顺序（先 `fsync` tool_result 再 commit ai_message，或 `os.replace` 原子写），让孤儿消息根本不产生。
+
+---
+
 ## 致谢
 
 原始仓库与全部内容来自 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)，本仓库仅作为个人学习笔记与代码实验使用。

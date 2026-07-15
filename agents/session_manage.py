@@ -138,7 +138,7 @@ class SessionManager:
         # 清理孤儿 AIMessage：上次进程在保存 AIMessage 后、ToolMessage 落盘前
         # 崩溃 / 被中断，导致 tool_calls 没有匹配的 tool 响应。重新加载整段历史
         # 直接回传 OpenAI 会触发 400 invalid_request_error。
-        # messages = self._sanitize_orphan_tool_calls(messages)
+        messages = self._sanitize_orphan_tool_calls(messages)
 
         return messages
 
