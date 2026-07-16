@@ -6,7 +6,8 @@ context_compact.py — 上下文压缩（v2 教程 s08 对齐版）
 
     L3 budget → L1 snip → L2 micro → [token 超阈值?] → L4 summary
 
-L1/L2/L3 都是 0 API 调用；L4 用一次 LLM 摘要。
+L1/L2/L3 始终每轮运行（0 API 调用），由各层内部阈值决定是否真做修改；
+L4 用一次 LLM 摘要，仅在 token 仍超阈值时触发。
 L4 触发时把压缩前的完整 messages 写到 .transcripts/，便于事后追溯。
 
 文件结构（自上而下读）：
@@ -61,9 +62,8 @@ MAX_TOOL_RESULT_BYTES = int(os.environ.get("MAX_TOOL_RESULT_BYTES") or 200000)
 PREVIEW_LENGTH = int(os.environ.get("PREVIEW_LENGTH") or 2000)
 
 # 触发阈值（按"已用 token / 上下文上限"的比例）
-# 达到该比例后 compact_if_needed 才进入压缩管线（L1/L2/L3 先跑）；低于则直接跳过，避免无谓抖动。
-PROACTIVE_TRIGGER_RATIO = float(os.environ.get("PROACTIVE_TRIGGER_RATIO") or 0.95)
-# L1/L2/L3 跑完后若仍超该比例，再走 L4 用 LLM 做整段摘要（这是唯一会发 API 调用的压缩层）。
+# L1/L2/L3 无前置阈值，每轮始终运行；L1/L2/L3 跑完后若 token 仍超该比例，再走 L4 用 LLM 做整段摘要。
+# 这是唯一会发 API 调用的压缩层，由 SUMMARY_TRIGGER_RATIO 单独门控。
 SUMMARY_TRIGGER_RATIO = float(os.environ.get("SUMMARY_TRIGGER_RATIO") or 0.80)
 
 # L4 summary —— 摘要时除前缀（SystemMessage + workspace 指令）外，原样保留的最近消息条数，防止刚发生的工具结果被一起压掉。
@@ -120,7 +120,11 @@ class ContextCompact:
 
     编排顺序：L3 budget → L1 snip → L2 micro → [token 超阈值?] → L4 summary。
 
-    所有消息工具、Token 工具、L1-L4 压缩函数都封装为实例方法。
+    L1/L2/L3 始终每轮调用（0 API 调用），由各层内部阈值决定是否真正修改 messages：
+      - L3 内部阈值：最后一条 AI 之后的所有 ToolMessage 字节数 > MAX_TOOL_RESULT_BYTES
+      - L1 内部阈值：消息总条数 > SNIP_MAX_MESSAGES
+      - L2 内部阈值：ToolMessage 总数 > KEEP_RECENT_TOOL_RESULTS 且 content > 320 字符
+    仅 L4 summary 走 LLM，由 SUMMARY_TRIGGER_RATIO 门控。
     构造时可通过 max_context_tokens / summarizer / transcript_dir / tool_results_dir
     覆盖默认配置；其余阈值统一从模块级常量读取（可由 .env 覆盖）。
     """
@@ -506,35 +510,34 @@ class ContextCompact:
         }
 
     def compact_if_needed(self, messages: list, force: bool = False) -> CompactResult:
-        """根据使用率自动决定是否压缩。force=True 时跳过阈值判断（手动 /compact 用）。"""
+        """每轮都跑 L3 → L1 → L2，由各层内部阈值决定是否真做修改；token 仍超 SUMMARY_TRIGGER_RATIO 时再走 L4。
+
+        force=True 时跳过 L4 的阈值判断直接摘要（手动 /compact 用）。
+        与 v2 教程 s08 一致：便宜的层（0 API）每轮必跑，昂贵的 L4（1 API）才按需触发。
+        """
         before = self.context_stats(messages)
         operations = self._empty_operations()
-
-        if not force and before.used_percent < PROACTIVE_TRIGGER_RATIO * 100:
-            return CompactResult(messages=messages, changed=False,
-                                 operations=operations, before=before, after=before)
-
         current, changed = messages, False
 
-        # L3 budget —— 把超大 tool_result 落盘
+        # L3 budget —— 把超大 tool_result 落盘（内部阈值：总字节 > MAX_TOOL_RESULT_BYTES）
         persisted = self.tool_result_budget(current)
         if persisted:
             operations["tool_results_persisted"] = persisted
             changed = True
 
-        # L1 snip —— 裁中间消息
+        # L1 snip —— 裁中间消息（内部阈值：消息数 > SNIP_MAX_MESSAGES）
         snipped = self.snip_compact(current)
         if len(snipped) != len(current):
             operations["messages_snip_compacted"] = len(current) - len(snipped)
             current, changed = snipped, True
 
-        # L2 micro —— 旧 tool_result 占位
+        # L2 micro —— 旧 tool_result 占位（内部阈值：ToolMessage 数 > KEEP_RECENT 且 content > 320 字符）
         micro_count = self.micro_compact(current)
         if micro_count:
             operations["tool_results_micro_compacted"] = micro_count
             changed = True
 
-        # L4 summary —— 仍超阈值（或 force）则用 LLM 摘要
+        # L4 summary —— 仍超阈值（或 force）才用 LLM 摘要
         if force or self.context_stats(current).used_percent >= SUMMARY_TRIGGER_RATIO * 100:
             new_messages = self.compact_history(current)
             if len(new_messages) != len(current):

@@ -361,7 +361,7 @@ class SessionManager:
             return
 
         if not result.changed:
-            reason = "未达到压缩阈值" if not force else "没有可压缩的历史消息"
+            reason = "未达到 L4 摘要阈值（已跑 L1/L2/L3 内部检查均无需处理）" if not force else "没有可压缩的历史消息"
             print(
                 f"\033[33m[上下文压缩] {reason}：当前 {before.used_tokens}/{before.max_label} tokens，"
                 f"剩余 {int(before.remaining_percent)}%\033[0m"
