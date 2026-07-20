@@ -220,21 +220,28 @@ isGateOpen() → 时间门控(≥24h) → 会话门控(≥5个新会话) → 锁
 
 ---
 
-## 教学版 vs 真实 CC 的关键差异
+## 教学版 vs 真实 CC vs 本项目的实现
 
-| 维度 | 教学版 (s09_code.py) | CC 真实源码 |
-|------|---------------------|-----------|
-| 提取 | 主循环直接调 LLM | forked agent + 权限沙箱 + 互斥检测 |
-| 选择 | LLM 返回 JSON（正则解析） | Sonnet side-query，JSON Schema 强制约束输出 |
-| 预取 | 无，同步加载 | `startRelevantMemoryPrefetch()` 异步 + prefetch cache |
-| 并发 | 无 | 闭包互斥锁 + 文件锁 + pendingContext 合并 |
-| 整理 | 文件数 ≥ 10 | 门控链：时间/会话/锁 + 崩溃回滚 |
-| Session Memory | 无 | 10 段模板 + 双阈值 + 15s 超时等待 |
-| 存储 | `.memory/`（项目内） | `~/.claude/projects/<hash>/memory/`（用户目录） |
-| Feature Gates | 无 | tengu_moth_copse / KAIROS / TEAMMEM 等 |
-| Prompt Cache | 无 | systemPromptSection 注册 + memoryAge 预计算 |
+| 维度 | 教学版 (s09_code.py) | CC 真实源码 | **本项目 (s09_code_cc.py / agent_full_v2.py)** |
+|------|---------------------|-----------|----------------------------------------------|
+| 写入方式 | turn 结束后额外 LLM 调用批量抽取 | 主 Agent tool 写入 + forked agent 后台提取 | **Tool 驱动**：模型通过 `write_memory`/`forget_memory` 即时写入，零额外 LLM 调用 |
+| 选择记忆 | 每轮调 LLM 选相关索引 + 关键词兜底 | Sonnet side-query 异步预取 | **无选择逻辑**：MEMORY.md 索引始终在 system prompt 中，模型直接可见 |
+| 记忆注入 | 在 user 消息前拼接完整正文 | attachment 按需注入 | **不注入正文**：模型需要详情时通过 `read_file .memory/<name>` 自己读 |
+| 整合/做梦 | `consolidate_memories` 全量重写 | Auto Dream：三重门控 + 锁 + 回滚 | **无** — Tool 模式不会产生重复/脏数据，无需清洗 |
+| 触发规则 | 系统提示中一句话带过 | 详细规则嵌入 system prompt | **显式规则**：何时写、写什么类型、怎么用，模型自行判断 |
+| 并发控制 | 无 | 闭包互斥锁 + 文件锁 + pendingContext | 无（单进程，不需要） |
+| 存储位置 | `.memory/`（项目内） | `~/.claude/projects/<hash>/memory/` | 同教学版 |
 
-**教学版简化的核心**：省掉了所有并发控制、权限沙箱、feature gate、团队记忆和异步预取机制。保留了四类记忆 + 索引-内容分离 + side-query 选择 + 提取与整理的完整流程，核心概念是一致的。
+### 关键差异说明
+
+本项目代码（`s09_code_cc.py`）**舍弃了教学版事后分析的复杂设计**，采用了和真实 CC 一致的 Tool 驱动模式：
+
+- **删除了** `select_relevant_memories`、`load_memories`、`extract_memories`、`consolidate_memories` — 这些函数每轮需要额外 1-2 次 LLM 调用，且依赖"猜哪些值得记"的不可靠策略
+- **新增了** `write_memory` 和 `forget_memory` 两个工具，模型在对话中自主判断何时写入/删除
+- **重写了** `build_system()`，加入清晰的记忆触发规则，告诉模型何时该保存
+- **简化了** `agent_loop()`，去掉所有记忆预处理和后处理，只保留 s08 压缩管道
+
+核心变化是 **记忆的触发权从代码转移到了模型**：代码不再替模型做"哪些值得记"的判断，而是给模型工具和规则，让它在对话中实时决策。
 
 ---
 
