@@ -36,7 +36,7 @@ class MemoryStore:
 
     # ── frontmatter 解析 ───────────────────────────────────
 
-    def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    def _parse_frontmatter(self, text: str) -> tuple[dict, str]:
         """极简 YAML frontmatter 解析器。"""
         if not text.startswith("---"):
             return {}, text
@@ -66,7 +66,13 @@ class MemoryStore:
         self.index_path.write_text("\n".join(lines) + "\n" if lines else "")
 
     def read_index(self) -> str:
-        """读 MEMORY.md 索引全文。注入 SYSTEM 提示用。"""
+        """读 MEMORY.md 索引全文。注入 SYSTEM 提示用。
+
+        若索引缺失或为空（说明磁盘上的 *.md 与索引失同步），
+        主动调用 _rebuild_index() 重建，保证 SYSTEM 提示永远反映真实状态。
+        """
+        if not self.index_path.exists() or not self.index_path.read_text().strip():
+            self._rebuild_index()
         if not self.index_path.exists():
             return ""
         text = self.index_path.read_text().strip()
