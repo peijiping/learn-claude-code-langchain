@@ -40,6 +40,11 @@ TRANSCRIPT_DIRNAME = WORKDIR / ".transcripts"
 # L3 落盘大 tool_result 的目录名
 TOOL_RESULTS_DIRNAME = WORKDIR / ".task_outputs/tool-results"
 
+# 记忆目录
+MEMORY_DIR = WORKDIR / ".memory"; MEMORY_DIR.mkdir(exist_ok=True)
+# 记忆索引文件
+MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
+
 
 
 

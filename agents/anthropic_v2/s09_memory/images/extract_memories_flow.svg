@@ -1,0 +1,326 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1700" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#92400e"/><stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="triggerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbeafe"/><stop offset="100%" stop-color="#bfdbfe"/>
+    </linearGradient>
+    <linearGradient id="prepGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef3c7"/><stop offset="100%" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="promptGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fde68a"/><stop offset="100%" stop-color="#fcd34d"/>
+    </linearGradient>
+    <linearGradient id="llmGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fed7aa"/><stop offset="100%" stop-color="#fdba74"/>
+    </linearGradient>
+    <linearGradient id="parseGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef3c7"/><stop offset="100%" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="persistGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d1fae5"/><stop offset="100%" stop-color="#a7f3d0"/>
+    </linearGradient>
+    <linearGradient id="errorGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fee2e2"/><stop offset="100%" stop-color="#fecaca"/>
+    </linearGradient>
+    <linearGradient id="highlightGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ede9fe"/><stop offset="100%" stop-color="#ddd6fe"/>
+    </linearGradient>
+    <!-- Markers -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d97706"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1700" fill="#fafbfc"/>
+
+  <!-- ============== Title ============== -->
+  <rect x="0" y="0" width="1400" height="56" fill="url(#header)"/>
+  <text x="700" y="36" fill="#fff" font-size="20" font-weight="700" text-anchor="middle">extract_memories 详细流程图 — 触发 → 预处理 → 抽取 → 落盘（基于 s09_code.py:324-406 源码）</text>
+
+  <!-- Legend -->
+  <g transform="translate(40, 76)">
+    <text x="0" y="10" fill="#475569" font-size="10" font-weight="600">图例：</text>
+    <rect x="46" y="2" width="12" height="10" rx="2" fill="url(#triggerGrad)" stroke="#2563eb" stroke-width="1"/>
+    <text x="62" y="11" fill="#2563eb" font-size="9" font-weight="600">① 触发条件</text>
+    <rect x="160" y="2" width="12" height="10" rx="2" fill="url(#prepGrad)" stroke="#d97706" stroke-width="1"/>
+    <text x="176" y="11" fill="#d97706" font-size="9" font-weight="600">② 预处理</text>
+    <rect x="270" y="2" width="12" height="10" rx="2" fill="url(#promptGrad)" stroke="#d97706" stroke-width="1"/>
+    <text x="286" y="11" fill="#d97706" font-size="9" font-weight="600">③ 构造 prompt</text>
+    <rect x="396" y="2" width="12" height="10" rx="2" fill="url(#llmGrad)" stroke="#ea580c" stroke-width="1"/>
+    <text x="412" y="11" fill="#ea580c" font-size="9" font-weight="600">④ LLM 调用</text>
+    <rect x="510" y="2" width="12" height="10" rx="2" fill="url(#parseGrad)" stroke="#d97706" stroke-width="1"/>
+    <text x="526" y="11" fill="#d97706" font-size="9" font-weight="600">⑤ 解析</text>
+    <rect x="610" y="2" width="12" height="10" rx="2" fill="url(#persistGrad)" stroke="#059669" stroke-width="1"/>
+    <text x="626" y="11" fill="#059669" font-size="9" font-weight="600">⑥ 落盘</text>
+    <rect x="710" y="2" width="12" height="10" rx="2" fill="url(#errorGrad)" stroke="#dc2626" stroke-width="1"/>
+    <text x="726" y="11" fill="#dc2626" font-size="9" font-weight="600">异常路径</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- =========== Section 1: 触发条件 ============================ -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 100)">
+    <rect x="30" y="0" width="1340" height="32" rx="4" fill="#1e3a5f"/>
+    <text x="50" y="21" fill="#fff" font-size="13" font-weight="700">① 触发条件 — 在 agent_loop 哪里调用？为什么是 pre_compress？</text>
+    <text x="1340" y="21" fill="#cbd5e1" font-size="10" text-anchor="end">s09_code.py:951-957</text>
+  </g>
+
+  <!-- 触发条件代码块 -->
+  <g transform="translate(40, 144)">
+    <rect x="0" y="0" width="640" height="130" rx="6" fill="#1e293b"/>
+    <text x="16" y="22" fill="#94a3b8" font-size="10" font-weight="600">s09_code.py:951-957</text>
+    <text x="16" y="44" fill="#fbbf24" font-size="11" font-family="ui-monospace, monospace">if response.stop_reason != "tool_use":</text>
+    <text x="16" y="62" fill="#e2e8f0" font-size="11" font-family="ui-monospace, monospace">    # 传的是 pre_compress（压缩前的全量），</text>
+    <text x="16" y="78" fill="#e2e8f0" font-size="11" font-family="ui-monospace, monospace">    # 不是 messages（已被 snip/micro 改写）</text>
+    <text x="16" y="94" fill="#86efac" font-size="11" font-family="ui-monospace, monospace">    extract_memories(pre_compress)</text>
+    <text x="16" y="110" fill="#86efac" font-size="11" font-family="ui-monospace, monospace">    consolidate_memories()</text>
+    <text x="16" y="124" fill="#e2e8f0" font-size="11" font-family="ui-monospace, monospace">    return  # 本 turn 结束</text>
+  </g>
+
+  <!-- 触发条件解读 -->
+  <g transform="translate(700, 144)">
+    <rect x="0" y="0" width="660" height="130" rx="6" fill="url(#triggerGrad)" stroke="#2563eb" stroke-width="2"/>
+    <text x="20" y="24" fill="#1e40af" font-size="12" font-weight="700">什么时候触发？</text>
+    <text x="20" y="46" fill="#1e3a8a" font-size="10">• <tspan font-weight="700">stop_reason != "tool_use"</tspan>：模型想给最终回答了</text>
+    <text x="20" y="62" fill="#1e3a8a" font-size="10">  （end_turn / max_tokens / stop_sequence 都算）</text>
+    <text x="20" y="82" fill="#1e3a8a" font-size="10">• 即每个用户 turn 结束时调一次（不是每次 tool_use 调一次）</text>
+    <text x="20" y="98" fill="#1e3a8a" font-size="10">• 紧接着必跟 <tspan font-weight="700">consolidate_memories()</tspan> → 整合</text>
+    <text x="20" y="118" fill="#dc2626" font-size="10" font-weight="700">⚠ 关键：传入 pre_compress 而非 messages</text>
+  </g>
+
+  <!-- pre_compress 流向箭头 -->
+  <g transform="translate(0, 290)">
+    <line x1="700" y1="0" x2="700" y2="40" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  </g>
+
+  <!-- pre_compress 来源说明 -->
+  <g transform="translate(40, 340)">
+    <rect x="0" y="0" width="1320" height="80" rx="8" fill="url(#highlightGrad)" stroke="#7c3aed" stroke-width="2"/>
+    <text x="20" y="24" fill="#5b21b6" font-size="12" font-weight="700">pre_compress 从哪来？ — s09_code.py:903-904</text>
+    <text x="20" y="44" fill="#1e3a8a" font-size="10">• 在 while 循环开头（每轮 LLM 调用前）做一次"压缩前快照"</text>
+    <text x="20" y="60" fill="#1e3a8a" font-size="10">• <tspan font-weight="700" fill="#dc2626">为什么不能传 messages？</tspan> snip/micro_compact 会把"用户原话"换成 "[Earlier tool result compacted.]"，LLM 看到的是占位符，</text>
+    <text x="20" y="74" fill="#1e3a8a" font-size="10">  抽取时一无所获 → 记忆系统直接瘫痪</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- =========== Section 2: 预处理 (lines 339-354) ============== -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 450)">
+    <line x1="700" y1="0" x2="700" y2="30" stroke="#d97706" stroke-width="2" marker-end="url(#arrow-amber)"/>
+  </g>
+
+  <g transform="translate(0, 490)">
+    <rect x="30" y="0" width="1340" height="32" rx="4" fill="#92400e"/>
+    <text x="50" y="21" fill="#fff" font-size="13" font-weight="700">② 预处理 — 把最近 10 条消息压成纯文本对话稿</text>
+    <text x="1340" y="21" fill="#fde68a" font-size="10" text-anchor="end">s09_code.py:339-354</text>
+  </g>
+
+  <!-- 步骤 2.1 -->
+  <g transform="translate(40, 534)">
+    <rect x="0" y="0" width="420" height="120" rx="8" fill="url(#prepGrad)" stroke="#d97706" stroke-width="2"/>
+    <text x="20" y="24" fill="#92400e" font-size="12" font-weight="700">步骤 2.1 · 切片 messages[-10:]</text>
+    <text x="20" y="44" fill="#1e3a8a" font-size="10">只取最近 10 条消息</text>
+    <text x="20" y="60" fill="#1e3a8a" font-size="10">（<tspan font-weight="700">为什么是 10？</tspan> 太小会漏掉本 turn 的关键</text>
+    <text x="20" y="74" fill="#1e3a8a" font-size="10">偏好；太大 prompt 爆 token；10 是经验值）</text>
+    <text x="20" y="94" fill="#dc2626" font-size="10" font-weight="700">⚠ 注意：这里读的是 pre_compress，是 raw 文本</text>
+  </g>
+
+  <!-- 步骤 2.2 -->
+  <g transform="translate(490, 534)">
+    <rect x="0" y="0" width="420" height="120" rx="8" fill="url(#prepGrad)" stroke="#d97706" stroke-width="2"/>
+    <text x="20" y="24" fill="#92400e" font-size="12" font-weight="700">步骤 2.2 · 统一 content 格式</text>
+    <text x="20" y="44" fill="#1e3a8a" font-size="10">content 可能是两种形态：</text>
+    <text x="20" y="60" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">• str → 直接用</text>
+    <text x="20" y="76" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">• list[Block] → 只抽 type=='text' 的</text>
+    <text x="20" y="92" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">  丢弃 tool_use / tool_result / image</text>
+  </g>
+
+  <!-- 步骤 2.3 -->
+  <g transform="translate(940, 534)">
+    <rect x="0" y="0" width="420" height="120" rx="8" fill="url(#prepGrad)" stroke="#d97706" stroke-width="2"/>
+    <text x="20" y="24" fill="#92400e" font-size="12" font-weight="700">步骤 2.3 · 过滤 + 拼接</text>
+    <text x="20" y="44" fill="#1e3a8a" font-size="10">• 跳过空 content（避免 "user: " 这种空行）</text>
+    <text x="20" y="60" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">  dialogue_parts.append(f"{role}: {content}")</text>
+    <text x="20" y="78" fill="#1e3a8a" font-size="10">• 用 \n 拼成对话稿</text>
+    <text x="20" y="96" fill="#dc2626" font-size="10" font-weight="700">• 若全部为空 → 直接 return（早退）</text>
+  </g>
+
+  <!-- 早退分支 -->
+  <g transform="translate(0, 670)">
+    <line x1="1150" y1="0" x2="1150" y2="30" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow-red)"/>
+    <text x="1170" y="20" fill="#dc2626" font-size="10" font-weight="600">空对话早退</text>
+  </g>
+
+  <g transform="translate(960, 706)">
+    <rect x="0" y="0" width="380" height="50" rx="6" fill="url(#errorGrad)" stroke="#dc2626" stroke-width="2"/>
+    <text x="20" y="20" fill="#991b1b" font-size="11" font-weight="700">return  # 没有任何可分析的对话内容</text>
+    <text x="20" y="38" fill="#7f1d1d" font-size="9">例如：用户连续两次只发 "q" 退出的边缘场景</text>
+  </g>
+
+  <!-- 主流程继续 -->
+  <g transform="translate(0, 670)">
+    <line x1="700" y1="0" x2="700" y2="30" stroke="#d97706" stroke-width="2" marker-end="url(#arrow-amber)"/>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- =========== Section 3: 构造 prompt (lines 357-374) ========== -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 780)">
+    <rect x="30" y="0" width="1340" height="32" rx="4" fill="#92400e"/>
+    <text x="50" y="21" fill="#fff" font-size="13" font-weight="700">③ 构造 prompt — 把"已有什么 + 当前对话"喂给 LLM</text>
+    <text x="1340" y="21" fill="#fde68a" font-size="10" text-anchor="end">s09_code.py:357-374</text>
+  </g>
+
+  <!-- 步骤 3.1 -->
+  <g transform="translate(40, 824)">
+    <rect x="0" y="0" width="600" height="180" rx="8" fill="url(#promptGrad)" stroke="#d97706" stroke-width="2"/>
+    <text x="20" y="24" fill="#92400e" font-size="12" font-weight="700">步骤 3.1 · list_memory_files() 读已有什么</text>
+    <text x="20" y="44" fill="#1e3a8a" font-size="10">遍历 .memory/*.md（除 MEMORY.md 自身），解析 frontmatter，</text>
+    <text x="20" y="58" fill="#1e3a8a" font-size="10">返回 list[dict]（filename/name/description/type/body）</text>
+    <text x="20" y="78" fill="#92400e" font-size="11" font-weight="700">拼成 catalog 喂给 LLM：</text>
+    <text x="20" y="98" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">  for m in existing:</text>
+    <text x="20" y="112" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">      f"- {m['name']}: {m['description']}"</text>
+    <text x="20" y="128" fill="#1e3a8a" font-size="10">若无 → "(none)"</text>
+    <text x="20" y="148" fill="#059669" font-size="10" font-weight="700">✓ 目的：让 LLM 别重复造轮子</text>
+    <text x="20" y="164" fill="#059669" font-size="10">  （不会把"用户用 tab 缩进"反复抽成 3 条记忆）</text>
+  </g>
+
+  <!-- 步骤 3.2 -->
+  <g transform="translate(660, 824)">
+    <rect x="0" y="0" width="700" height="180" rx="8" fill="url(#promptGrad)" stroke="#d97706" stroke-width="2"/>
+    <text x="20" y="24" fill="#92400e" font-size="12" font-weight="700">步骤 3.2 · 拼完整 prompt（4 段）</text>
+    <text x="20" y="46" fill="#1e3a8a" font-size="10" font-weight="700">① 任务说明：</text>
+    <text x="40" y="62" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">"Extract user preferences, constraints, or project facts..."</text>
+    <text x="20" y="82" fill="#1e3a8a" font-size="10" font-weight="700">② Schema 约束：</text>
+    <text x="40" y="98" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">JSON array, each {name, type, description, body}</text>
+    <text x="40" y="112" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">type ∈ {user, feedback, project, reference}</text>
+    <text x="20" y="132" fill="#1e3a8a" font-size="10" font-weight="700">③ 已有什么：</text>
+    <text x="40" y="148" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">"Existing memories:\n{name}: {description}\n..."</text>
+    <text x="20" y="166" fill="#1e3a8a" font-size="10" font-weight="700">④ 本 turn 对话：</text>
+    <text x="40" y="180" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">"Dialogue:\n{dialogue[:4000]}"（截断到 4000 字符）</text>
+  </g>
+
+  <!-- 主流程继续 -->
+  <g transform="translate(0, 1020)">
+    <line x1="700" y1="0" x2="700" y2="30" stroke="#d97706" stroke-width="2" marker-end="url(#arrow-amber)"/>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- =========== Section 4: LLM 调用 (lines 377-388) ============ -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 1080)">
+    <rect x="30" y="0" width="1340" height="32" rx="4" fill="#9a3412"/>
+    <text x="50" y="21" fill="#fff" font-size="13" font-weight="700">④ LLM 调用 — 一次小请求，等 JSON 数组回来</text>
+    <text x="1340" y="21" fill="#fed7aa" font-size="10" text-anchor="end">s09_code.py:377-388</text>
+  </g>
+
+  <!-- LLM 调用详情 -->
+  <g transform="translate(40, 1124)">
+    <rect x="0" y="0" width="640" height="170" rx="8" fill="url(#llmGrad)" stroke="#ea580c" stroke-width="2"/>
+    <text x="20" y="24" fill="#7c2d12" font-size="12" font-weight="700">调用参数</text>
+    <text x="20" y="48" fill="#1e3a8a" font-size="11" font-family="ui-monospace, monospace">response = client.messages.create(</text>
+    <text x="40" y="64" fill="#1e3a8a" font-size="11" font-family="ui-monospace, monospace">model=MODEL,</text>
+    <text x="40" y="80" fill="#1e3a8a" font-size="11" font-family="ui-monospace, monospace">messages=[{"role": "user", "content": prompt}],</text>
+    <text x="40" y="96" fill="#1e3a8a" font-size="11" font-family="ui-monospace, monospace">max_tokens=800,    # 装下 JSON 数组够用</text>
+    <text x="20" y="112" fill="#1e3a8a" font-size="11" font-family="ui-monospace, monospace">)</text>
+    <text x="20" y="136" fill="#7c2d12" font-size="11" font-weight="700">设计要点</text>
+    <text x="20" y="154" fill="#1e3a8a" font-size="10">• 单条 user message（无 system、无 tools）</text>
+    <text x="20" y="168" fill="#1e3a8a" font-size="10">• 不缓存：这是次级调用，每次 prompt 都变（带最新 dialogue）</text>
+  </g>
+
+  <!-- 解析 -->
+  <g transform="translate(700, 1124)">
+    <rect x="0" y="0" width="660" height="170" rx="8" fill="url(#parseGrad)" stroke="#d97706" stroke-width="2"/>
+    <text x="20" y="24" fill="#92400e" font-size="12" font-weight="700">步骤 5.1 · 防御性解析（防模型加 ```json 等包装）</text>
+    <text x="20" y="46" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">text = extract_text(response.content).strip()</text>
+    <text x="20" y="62" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">match = re.search(r'\[.*\]', text, re.DOTALL)</text>
+    <text x="20" y="78" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">if not match: return        # 没匹配到 []</text>
+    <text x="20" y="94" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">items = json.loads(match.group())</text>
+    <text x="20" y="110" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">if not items: return         # LLM 认为没新东西（[]）</text>
+    <text x="20" y="136" fill="#92400e" font-size="11" font-weight="700">两个早退点</text>
+    <text x="20" y="154" fill="#dc2626" font-size="10">• 正则没匹到 → return（模型不配合，吞掉）</text>
+    <text x="20" y="168" fill="#dc2626" font-size="10">• 解析后是空数组 → return（正常路径：模型判断"无新记忆"）</text>
+  </g>
+
+  <!-- 异常吞掉 -->
+  <g transform="translate(0, 1310)">
+    <line x1="700" y1="0" x2="700" y2="30" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow-red)"/>
+    <text x="710" y="20" fill="#dc2626" font-size="10" font-weight="600">整个 try 块任意异常 → 静默吞掉</text>
+  </g>
+
+  <g transform="translate(40, 1346)">
+    <rect x="0" y="0" width="1320" height="50" rx="6" fill="url(#errorGrad)" stroke="#dc2626" stroke-width="2"/>
+    <text x="20" y="20" fill="#991b1b" font-size="11" font-weight="700">except Exception: pass  # 网络/JSON/落盘失败都不影响主流程</text>
+    <text x="20" y="38" fill="#7f1d1d" font-size="9">设计哲学：记忆系统是"附加价值"，宁可漏抽也不能让主循环挂掉。下一 turn 再试。</text>
+  </g>
+
+  <!-- 主流程继续 -->
+  <g transform="translate(0, 1310)">
+    <line x1="280" y1="0" x2="280" y2="30" stroke="#059669" stroke-width="2" marker-end="url(#arrow-green)"/>
+    <text x="180" y="20" fill="#059669" font-size="10" font-weight="600">items 非空且有效 → 继续</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- =========== Section 5: 落盘 (lines 391-403) ================ -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 1420)">
+    <rect x="30" y="0" width="1340" height="32" rx="4" fill="#065f46"/>
+    <text x="50" y="21" fill="#fff" font-size="13" font-weight="700">⑤ 落盘 — 逐条写 .md，每写一条触发索引重建</text>
+    <text x="1340" y="21" fill="#a7f3d0" font-size="10" text-anchor="end">s09_code.py:391-403</text>
+  </g>
+
+  <g transform="translate(40, 1464)">
+    <rect x="0" y="0" width="640" height="180" rx="8" fill="url(#persistGrad)" stroke="#059669" stroke-width="2"/>
+    <text x="20" y="24" fill="#065f46" font-size="12" font-weight="700">步骤 5.2 · 遍历 items，每条走一遍写盘</text>
+    <text x="20" y="46" fill="#1e3a8a" font-size="11" font-family="ui-monospace, monospace">for mem in items:</text>
+    <text x="40" y="62" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">name = mem.get("name", f"memory_{int(time.time())}")</text>
+    <text x="40" y="78" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">mem_type = mem.get("type", "user")</text>
+    <text x="40" y="94" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">desc = mem.get("description", "")</text>
+    <text x="40" y="110" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">body = mem.get("body", "")</text>
+    <text x="40" y="126" fill="#dc2626" font-size="10" font-family="ui-monospace, monospace">if desc and body:           # 缺一即丢</text>
+    <text x="40" y="142" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">    write_memory_file(name, mem_type, desc, body)</text>
+    <text x="40" y="158" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">    count += 1</text>
+    <text x="20" y="174" fill="#059669" font-size="10" font-weight="700">缺一即丢：避免 LLM 偶尔漏字段产生的"空壳记忆"</text>
+  </g>
+
+  <!-- write_memory_file 展开 -->
+  <g transform="translate(700, 1464)">
+    <rect x="0" y="0" width="660" height="180" rx="8" fill="url(#persistGrad)" stroke="#059669" stroke-width="2"/>
+    <text x="20" y="24" fill="#065f46" font-size="12" font-weight="700">write_memory_file 内部三步 — s09_code.py:116-139</text>
+    <text x="20" y="46" fill="#1e3a8a" font-size="10" font-weight="700">① 生成 slug：</text>
+    <text x="40" y="62" fill="#1e3a8a" font-size="10" font-family="ui-monospace, monospace">"user prefers tabs" → "user-prefers-tabs.md"</text>
+    <text x="20" y="82" fill="#1e3a8a" font-size="10" font-weight="700">② 写单条 .md：</text>
+    <text x="40" y="98" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">---</text>
+    <text x="40" y="110" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">name: {name} | description: {description} | type: {mem_type}</text>
+    <text x="40" y="122" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">---</text>
+    <text x="40" y="134" fill="#1e3a8a" font-size="9" font-family="ui-monospace, monospace">\n{body}</text>
+    <text x="20" y="152" fill="#1e3a8a" font-size="10" font-weight="700">③ _rebuild_index() — 重建 MEMORY.md 索引</text>
+    <text x="40" y="170" fill="#059669" font-size="10" font-weight="700">→ 写一条就重建一次（保证磁盘与索引永远一致）</text>
+  </g>
+
+  <!-- 最终输出 -->
+  <g transform="translate(0, 1660)">
+    <line x1="700" y1="0" x2="700" y2="20" stroke="#059669" stroke-width="2"/>
+  </g>
+
+  <g transform="translate(40, 1680)">
+    <rect x="0" y="0" width="1320" height="14" rx="3" fill="#065f46"/>
+    <text x="20" y="11" fill="#fff" font-size="10" font-weight="700" text-anchor="start">最终输出：\033[33m[Memory: extracted {count} new memories]\033[0m （黄色日志，让用户感知"刚存了几条"）  →  然后回到 agent_loop 继续走 consolidate_memories() 整合流程</text>
+  </g>
+
+</svg>

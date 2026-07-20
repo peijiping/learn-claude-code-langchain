@@ -1,10 +1,10 @@
 """主智能体系统提示词
 
 把 SYSTEM prompt 从 agent_full_v2.py 抽出来，让主循环代码保持简洁。
-动态部分（工作目录、技能描述）在调用时注入。
+动态部分（工作目录、技能描述、记忆索引）在调用时注入。
 """
 
-from tools import WORKDIR, SKILLS_DIR
+from tools import WORKDIR, SKILLS_DIR, MEMORY
 from skills import SkillLoader
 
 SKILLS = SkillLoader(SKILLS_DIR)
@@ -110,4 +110,32 @@ todo 是单会话待办列表工具，用于把复杂请求拆成可执行步骤
 
 Skills 可使用列表：
 {SKILLS.list_skills()}
+
+# 五、记忆系统（memory）
+
+你有一个跨会话持久的记忆系统，存放在 `.memory/` 目录。每条记忆是一个 *.md 文件，索引由 `MEMORY.md` 维护。
+模型通过 `write_memory` / `forget_memory` 两个工具即时落盘，不再额外起 LLM 事后抽取。
+
+## 当前已保存的记忆（MEMORY.md 索引）
+{MEMORY.read_index() or "（暂无记忆）"}
+
+## 何时调用 write_memory
+当用户出现以下行为时，**必须**调用 `write_memory` 保存：
+- 表达个人偏好（"我喜欢 X"、"别用 Y"、"永远 Z"）
+- 纠正你的做法（"不对，应该这样"）
+- 肯定某个方案（"就这么干"、"可以"）
+- 透露项目事实或约束（"我们用的是 X"、"deadline 是 Y"、"干系人是 Z"）
+- 提到外部资源（"文档在 ..."、"bug tracker 是 ..."）
+- 显式要求"记住"某事
+
+## 记忆的四种类型
+- **user**：用户的角色、偏好、习惯（如"喜欢空格不用 tab"）
+- **feedback**：工作方式上的指导（如"测试里不要 mock 数据库"）
+- **project**：当前目标、截止日期、架构决策（如"用 PostgreSQL 16"）
+- **reference**：外部资源指针（如"API 文档在 docs.example.com"）
+
+## 如何使用记忆
+- 每轮开始前先扫一眼上面的索引，若有与当前任务相关的记忆，用 `read_file .memory/<文件名>` 读全文
+- 如果用户行为与已存记忆矛盾，先调 `forget_memory` 删旧条，再按新事实写新条
+- 保持条目简洁、客观；每条一句话即可
 """

@@ -17,6 +17,7 @@ from todo_manager import TodoManager
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
 from message_bus import MessageBus, VALID_MSG_TYPES
+from memories import MemoryStore
 from tool_base import (
     BASE_TOOL,
     BASE_TOOL_HANDLERS,
@@ -27,6 +28,7 @@ from tool_base import (
     TEAM_DIR,
     WORKDIR,
     CHAT_HISTORY_DIR,
+    MEMORY_DIR,
 )
 
 
@@ -41,6 +43,8 @@ BACKGROUND_MANAGER = BackgroundManager()
 BUS = MessageBus(INBOX_DIR)
 # 创建全局 TeammateManager 实例
 TEAM = TeammateManager(TEAM_DIR)
+# 创建全局 MemoryStore 实例
+MEMORY = MemoryStore(MEMORY_DIR)
 
 
 # ============================================================
@@ -54,6 +58,8 @@ TOOL_HANDLERS = {
     "todo":        lambda **kw: TODO_MANAGER.update(kw["items"], kw.get("fresh_start", False)),
     "load_skill":  lambda **kw: SKILLS.load_skill(kw["name"]),
     "list_skills": lambda **kw: SKILLS.list_skills(),
+    "write_memory":   lambda **kw: MEMORY.write(kw["name"], kw["type"], kw["description"], kw["body"]),
+    "forget_memory":  lambda **kw: MEMORY.forget(kw["name"]),
 }
 
 # ============================================================
@@ -80,6 +86,30 @@ TOOLS = [
     {"name": "list_skills", "description": "获取当前所有可用技能（skill）的名称和简短描述列表，用于了解当前会话支持哪些技能。",
      "input_schema": {"type": "object", "properties": {}}
     },
+    # ── [改动 2] 新增：记忆工具 ──────────────────────────────
+    {"name": "write_memory",
+     "description": "Save a piece of information to persistent memory. "
+                    "Use when the user states a preference, corrects you, "
+                    "approves an approach, reveals a project fact, or asks you to remember something. "
+                    "The memory will be available in future sessions.",
+     "input_schema": {"type": "object",
+       "properties": {
+         "name": {"type": "string", "description": "Short kebab-case identifier, e.g. 'user-preference-tabs'"},
+         "type": {"type": "string",
+                   "enum": ["user", "feedback", "project", "reference"],
+                   "description": "user=preference/habit, feedback=guidance/correction, project=fact/decision, reference=external pointer"},
+         "description": {"type": "string", "description": "One-line summary shown in MEMORY.md index"},
+         "body": {"type": "string", "description": "Full detail in markdown. Include context and rationale."}
+       },
+       "required": ["name", "type", "description", "body"]}},
+    {"name": "forget_memory",
+     "description": "Delete a memory by its name or filename. "
+                    "Use when the user contradicts a saved memory or asks you to forget something.",
+     "input_schema": {"type": "object",
+       "properties": {
+         "name": {"type": "string", "description": "Name of the memory to delete (slug or filename)"}
+       },
+       "required": ["name"]}},
 ]
 
 
