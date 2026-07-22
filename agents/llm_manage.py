@@ -128,5 +128,3 @@ def create_llm_with_tools(tools, **kwargs) -> ChatOpenAI:
     return llm.bind_tools(tools)
 
 
-# 默认的 LLM 实例（向后兼容）
-llm = create_llm()
