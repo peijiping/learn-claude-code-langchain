@@ -42,7 +42,6 @@ s04 将其重构为钩子,带来以下好处:
 """
 
 from tools import WORKDIR
-from langchain_core.messages import ToolMessage
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -165,8 +164,8 @@ class HookSystem:
         """
         # 把字典里的关键字段拆出来,避免后面反复用 tool_call["name"] / tool_call["args"] 的写法,
         # 风格与 check_permission.py 的 LangChain 改造保持一致。
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
+        tool_name = tool_call["function"]["name"]
+        tool_args = tool_call["function"]["args"]
 
         # ── 规则 1:bash 命令的硬黑名单 + 软危险检查 ──────────────────────
         if tool_name == "bash":
@@ -213,8 +212,8 @@ class HookSystem:
             None (本钩子只做观察,从不阻断)。
         """
         # 拆出常用字段,保持与 permission_hook 一致的 LangChain 风格写法。
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
+        tool_name = tool_call["function"]["name"]
+        tool_args = tool_call["function"]["args"]
         # 取 args 字典的前两个值,转为字符串后截断至 60 字符,
         # 避免长参数 (如大段代码、巨型文件) 把终端刷屏。
         args_preview = str(list(tool_args.values())[:2])[:60]
@@ -268,11 +267,10 @@ class HookSystem:
 
         实现细节:
             `messages` 是完整的对话历史,元素可能是两类对象:
-              ① LangChain 的 Pydantic BaseMessage (SystemMessage/HumanMessage/
-                 AIMessage/ToolMessage) —— 通过属性访问 .content;
+              ① 属性访问 .content;
               ② 普通 dict ({"role": ..., "content": ...}) —— 通过 .get() 取 content。
-            工具结果以 ToolMessage 实例的形式追加,所以最直接的统计方式是
-            isinstance(m, ToolMessage)。同时为兼容旧的"content 是 list 且其中
+            工具结果以 role="tool" 标式出现,所以最直接的统计方式是
+            m.get("role") == "tool"。同时为兼容旧的"content 是 list 且其中
             含 type=='tool_result' 块"的 dict 格式,仍保留对这种结构的扫描。
             Pydantic 对象没有 .get() 方法,故必须先用 isinstance 分流,
             否则会抛出 AttributeError (本次 bug 的根因)。
@@ -280,7 +278,7 @@ class HookSystem:
         tool_count = 0
         for m in messages:
             # 路径 ①:LangChain Pydantic BaseMessage —— 优先按类型统计
-            if isinstance(m, ToolMessage):
+            if m.get("role") == "tool":
                 tool_count += 1
                 continue
             # 路径 ②:dict —— 旧格式,需要先判断对象类型再调用 .get()
@@ -288,7 +286,7 @@ class HookSystem:
                 content = m.get("content")
                 if isinstance(content, list):
                     for b in content:
-                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                        if isinstance(b, dict) and b.get("role") == "tool":
                             tool_count += 1
         print(f"\033[90m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
         return None

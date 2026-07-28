@@ -329,31 +329,58 @@ BASE_TOOL_HANDLERS = {
 
 
 # 基础工具，主要是子智能体可用的工具
+# 工具定义遵循 OpenAI SDK 格式：每个工具用 type="function" 包装，参数定义在 function.parameters 下
 BASE_TOOL = [
     {
-        "name": "bash","description": "执行 shell 命令。",
-        "input_schema": {"type": "object","properties": {"command": {"type": "string"}},"required": ["command"]}
+        "type": "function",
+        "function": {
+            "name": "bash", "description": "执行 shell 命令。",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+        }
     },
     {
-        "name": "run_read","description": "读取文件内容。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},"required": ["path"]}
+        "type": "function",
+        "function": {
+            "name": "run_read", "description": "读取文件内容。",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}
+        }
     },
     {
-        "name": "run_read_pdf","description": "使用 pymupdf 安全读取 PDF 文件，分页提取文本。读取 PDF 时必须使用此工具，不要使用 bash 的 strings/cat 等命令。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string","description": "PDF 文件路径"},"max_pages": {"type": "integer","description": "最大读取页数，默认5"},"chars_per_page": {"type": "integer","description": "每页最大字符数，默认3000"}},"required": ["path"]}
+        "type": "function",
+        "function": {
+            "name": "run_read_pdf", "description": "使用 pymupdf 安全读取 PDF 文件，分页提取文本。读取 PDF 时必须使用此工具，不要使用 bash 的 strings/cat 等命令。",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string", "description": "PDF 文件路径"},
+                "max_pages": {"type": "integer", "description": "最大读取页数，默认5"},
+                "chars_per_page": {"type": "integer", "description": "每页最大字符数，默认3000"}
+            }, "required": ["path"]}
+        }
     },
     {
-        "name": "run_write","description": "将内容写入文件。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "content": {"type": "string"}},"required": ["path", "content"]}
+        "type": "function",
+        "function": {
+            "name": "run_write", "description": "将内容写入文件。",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}
+        }
     },
     {
-        "name": "run_edit","description": "替换文件中指定的文本内容。",
-        "input_schema": {"type": "object","properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},"required": ["path", "old_text", "new_text"]}
+        "type": "function",
+        "function": {
+            "name": "run_edit", "description": "替换文件中指定的文本内容。",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"}
+            }, "required": ["path", "old_text", "new_text"]}
+        }
     },
-    {"name": "run_glob","description": "使用 glob 模式匹配文件路径。",
-     "input_schema": {"type": "object","properties": {"pattern": {"type": "string","description": "要匹配的文件路径模式"}}, "required": ["pattern"]}
+    {
+        "type": "function",
+        "function": {
+            "name": "run_glob", "description": "使用 glob 模式匹配文件路径。",
+            "parameters": {"type": "object", "properties": {"pattern": {"type": "string", "description": "要匹配的文件路径模式"}}, "required": ["pattern"]}
+        }
     },
-    
 ]
 
 

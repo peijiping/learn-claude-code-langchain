@@ -9,12 +9,9 @@ subagent.py - 通用型子智能体模块
 
 import json
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-
-from llm_manage import create_llm_with_tools
 from tools import WORKDIR
 from hooks import HookSystem
-
+from llm_manage import LLMClient
 
 class SubAgent:
     """
@@ -53,6 +50,7 @@ class SubAgent:
             hook_system = HookSystem()
             hook_system.register_default_hooks()
         self.hook_system = hook_system
+        self.sub_llm_client = LLMClient().llm
 
     @staticmethod
     def _extract_content(response) -> str:
@@ -96,9 +94,8 @@ class SubAgent:
 
         sub_system = system_prompt or self.DEFAULT_SYSTEM_PROMPT
 
-        sub_messages = [SystemMessage(content=sub_system)]
-        sub_messages.append(HumanMessage(content=prompt))
-        sub_llm_with_tools = create_llm_with_tools(sub_tools)
+        sub_messages = [{"role": "system", "content": sub_system}]
+        sub_messages.append({"role": "user", "content": prompt})
 
         tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
         print(f"  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...")
@@ -106,33 +103,43 @@ class SubAgent:
         sub_response = None
         for iteration in range(self.MAX_ITERATIONS):
             try:
-                sub_response = sub_llm_with_tools.invoke(sub_messages)
+                sub_response = self.sub_llm_client.chat.completions.create(
+                    messages=sub_messages,
+                    tools=sub_tools,
+                    tool_choice="auto", #工具选择，值域 none、auto、required，默认 auto
+                    parallel_tool_calls=True, #是否并行执行工具调用，默认 False
+                    temperature=0.5,
+                    reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
+                    extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
+        )
             except Exception as e:
                 error_msg = f"子智能体 API 调用失败 (第 {iteration + 1} 轮): {type(e).__name__}: {e}"
                 print(f"  [subagent] {error_msg}")
                 return error_msg
+            sub_msg = sub_response.choices[0].message
+            sub_messages.append(sub_msg)
 
-            sub_messages.append(sub_response)
-
-            if not hasattr(sub_response, "tool_calls") or not sub_response.tool_calls:
-                content = self._extract_content(sub_response)
+            if not hasattr(sub_msg, "tool_calls") or not sub_msg.tool_calls:
+                content = self._extract_content(sub_msg)
                 return content or "(no summary)"
 
-            for tool_call in sub_response.tool_calls:
-                tool_name = tool_call["name"]
+            for tool_call in sub_msg.tool_calls:
                 tool_id = tool_call["id"]
+                tool_name = tool_call["function"]["name"]
+                tool_args = tool_call["function"]["arguments"]
+                
 
                 if tool_call["name"]:
                     # hooks: PreToolUse
                     blocked = self.hook_system.trigger("PreToolUse", tool_call)
                     if blocked:
-                        sub_messages.append({"type": "tool_result", "tool_use_id": tool_call["id"],
+                        sub_messages.append({"role": "tool", "tool_use_id": tool_id,
                                              "content": str(blocked)})
                         continue
                     handler = self.tool_handlers.get(tool_name)
                     if handler:
                         try:
-                            output = handler(**tool_call["args"])
+                            output = handler(**tool_args)
                         except Exception as e:
                             output = f"Error executing {tool_name}: {e}"
                         # hooks: PostToolUse
@@ -140,17 +147,15 @@ class SubAgent:
                     else:
                         output = f"Unknown tool: {tool_name}"
                     result = {
-                        "type": "tool_result",
-                        "tool_name": tool_name,
-                        "tool_args": tool_call["args"],
-                        "tool_id": tool_id,
-                        "tool_output": str(output),
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "content": str(output),
                     }
                 else:
                     result = {
-                        "type": "tool_result",
-                        "tool_id": tool_id,
-                        "tool_output": "Error: tool call missing name",
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "content": "Error: tool call missing name",
                     }
                 sub_messages.append(
                     ToolMessage(

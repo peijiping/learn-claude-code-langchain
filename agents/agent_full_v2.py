@@ -6,7 +6,6 @@ V2版本的通用智能体学习
 import json
 import os
 
-from langchain_core.messages import HumanMessage, ToolMessage
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
@@ -23,7 +22,7 @@ from tools import (
     TODO_MANAGER,
 )
 from skills import SkillLoader
-from llm_manage import create_llm_with_tools
+from llm_manage import LLMClient
 from system_prompt import build_system_prompt
 # from check_permission import check_permission
 from hooks import HookSystem
@@ -50,7 +49,8 @@ load_dotenv(override=True)
 # 系统prompt
 SYSTEM = build_system_prompt()
 # 创建绑定了工具的 LLM 实例
-llm_with_tools = create_llm_with_tools(MAIN_AGENT_TOOLS)
+llm_client = LLMClient().llm
+
 # 钩子实例：主循环的 hook_system 在模块级只实例化一次
 hook_system = HookSystem()
 hook_system.register_default_hooks()
@@ -65,9 +65,10 @@ MAX_AGENT_ITERATIONS = 100
 
 def _execute_tool_call(tool_call: dict) -> dict:
     """执行单个工具调用（sub_agent 或普通工具），返回结果字典"""
-    tool_name = tool_call["name"]
-    tool_args = tool_call["args"]
-    tool_id = tool_call["id"]
+    tool_name = tool_call.function.name
+    tool_args = tool_call.function.arguments
+    tool_id = tool_call.id
+
 
     if tool_name == "sub_agent":
         allowed_tools = tool_args.get("allowed_tools")
@@ -86,11 +87,11 @@ def _execute_tool_call(tool_call: dict) -> dict:
     print("-" * 20)
 
     return {
-        "type": "tool_result",
+        "role": "tool",
         "tool_name": tool_name,
         "tool_args": tool_args,
-        "tool_id": tool_id,
-        "tool_output": tool_output,
+        "tool_call_id": tool_id,
+        "content": tool_output,
     }
 
 
@@ -118,41 +119,56 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         # 在调用 LLM 前检查上下文，达到阈值时阻塞执行压缩并同步会话文件。
         session_manager.maybe_compact_context(history_messages, session_file)
 
-        llm_response = llm_with_tools.invoke(history_messages)
+        #调用大模型执行当前轮次的回复
+        llm_response = llm_client.chat.completions.create(
+            messages=history_messages,
+            tools=MAIN_AGENT_TOOLS,
+            tool_choice="auto", #工具选择，值域 none、auto、required，默认 auto
+            parallel_tool_calls=True, #是否并行执行工具调用，默认 False
+            temperature=0.5,
+            reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
+            extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
+        )
+        # 从大模型回复中提取消息
+        response_msg = llm_response.choices[0].message
+        
+        #打印大模型的思考和回复内容
+        print(f"[本轮思考] {response_msg.reasoning_content}")
+        print(f"[本轮回复] {response_msg.content}")
+        
         # 加入大模型回复到历史消息中
-        history_messages.append(llm_response)
-        session_manager.append_message_to_session(session_file, llm_response)
-        print(f"[本轮回复] {llm_response.content}")
+        history_messages.append(response_msg)
+        session_manager.append_message_to_session(session_file, response_msg)
+        
 
-        if not hasattr(llm_response, "tool_calls") or not llm_response.tool_calls:
+        if response_msg.tool_calls:
             #增加一个hook，用于在大模型回复中检查是否需要强制结束当前轮次
             force = hook_system.trigger("Stop", history_messages)
             if force:
+                #往消息中记录强制结束的原因
                 history_messages.append({"role": "user", "content": force})
                 continue
             return
 
-        print(f"》》》》》》》》[本轮 tool_calls 数量] {len(llm_response.tool_calls)}")
-        print(llm_response.tool_calls)
+        print(f"》》》》》》》》[本轮 tool_calls 数量] {len(response_msg.tool_calls)}")
+        print(response_msg.tool_calls)
         print("*********")
         # 所有工具调用都根据 parallel 参数分组，并行组用线程池执行，串行组按顺序执行
         tool_call_results = []
         used_todo = False
-        for tool_call in llm_response.tool_calls:
-            if tool_call["name"] == "todo":
+        # 目前先在循环中串行执行所有工具调用，大模型返回工具根据任务需要会一次返回多个或一个工具
+        for tool_call in response_msg.tool_calls:
+            if tool_call.g["function"]["name"] == "todo":
                 used_todo = True
-            # 目前先不要并行执行，后续要优化并行执行方式，当前无论何种情况都是按顺序串行执行。
-            # s03 变更：执行前先经过权限管道检查
-            # if not check_permission(tool_call):
-            #     results.append({"type": "tool_result", "tool_use_id": tool_call["id"],
-            #                     "content": "Permission denied."})
-            #     continue
-            # s04 change: hook replaces hard-coded check_permission()
+            
+            # s04 change: hook，用钩子增加工具权限校验和日志记录，若不符合权限则阻塞执行
             blocked = hook_system.trigger("PreToolUse", tool_call)
             if blocked:
-                tool_call_results.append({"type": "tool_result", "tool_use_id": tool_call["id"],
+                #往消息中记录工具调用被阻塞的原因
+                tool_call_results.append({"role": "tool", "tool_call_id": tool_call["id"],
                                 "content": str(blocked)})
                 continue
+            
             # 执行工具调用或 sub_agent 调用
             tool_call_result = _execute_tool_call(tool_call)
             tool_call_results.append(tool_call_result)
@@ -162,17 +178,17 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         # 并行执行 parallel=true 的工具,
         # 目前先注释掉，不支持并行执行，因为当前的并行并未考虑到当同时返回多个工具时，多个工具有并行和顺序执行的执行顺序情况，目前仅为同时并行或同时串行。
 
-
+        # 检查todo更新情况，若3轮未更新则给大模型添加更新todo的提醒
         rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
         if TODO_MANAGER.has_open_items() and rounds_since_todo >= 3:
             tool_call_results.insert(0, {"type": "text", "text": "<reminder>Update your tasks.</reminder>"})
 
         print("》》》》》》》》")
         # 加入工具执行结果到历史消息中（必须为 ToolMessage，否则 OpenAI 会报 400）
-        for tc in llm_response.tool_calls:
+        for tc in response_msg.tool_calls:
             # 找到对应 tool_call_id 的执行结果
             result = next(
-                (r for r in tool_call_results if r.get("tool_id") == tc["id"]),
+                (r for r in tool_call_results if r.get("tool_call_id") == tc["id"]),
                 None,
             )
             if result is None:
@@ -182,7 +198,8 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
                 )
             else:
                 tool_content = json.dumps(result, ensure_ascii=False)
-            tool_msg = ToolMessage(content=tool_content, tool_call_id=tc["id"])
+            # tool_msg = ToolMessage(content=tool_content, tool_call_id=tc["id"])
+            tool_msg = {"role": "tool", "content": tool_content,"tool_call_id":tc["id"]}
             history_messages.append(tool_msg)
             session_manager.append_message_to_session(session_file, tool_msg)
 
@@ -246,10 +263,10 @@ def main():
             print(f"当前可用技能:\n {skill_list}")
             continue
 
-        # s04: pre hook
+        # s04: UserPromptSubmit 钩子 —— 上下文注入提示。此处仅做"提示/观察",并不真正修改 query，先占位后续可以再此处扩展逻辑
         hook_system.trigger("UserPromptSubmit", query)
         
-        history_messages.append(HumanMessage(content=query))
+        history_messages.append({"role": "user", "content": query})
         session_manager.append_message_to_session(session_file, history_messages[-1])
         session_manager.maybe_compact_context(history_messages, session_file)
         # 执行智能体主循环

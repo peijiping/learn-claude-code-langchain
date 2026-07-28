@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Optional
 
 from context_compact import ContextCompact
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 
 class SessionManager:
@@ -104,30 +103,32 @@ class SessionManager:
                     if not line:
                         continue
                     msg_data = json.loads(line)
-                    msg_type = msg_data.get("type")
+                    msg_role = msg_data.get("role")
                     content = msg_data.get("content", "")
 
-                    if msg_type == "system":
-                        messages.append(SystemMessage(content=content))
-                    elif msg_type == "human":
-                        messages.append(HumanMessage(content=content))
-                    elif msg_type == "ai":
-                        ai_msg = AIMessage(
-                            content=content,
-                            additional_kwargs=msg_data.get("additional_kwargs", {}),
-                            response_metadata=msg_data.get("response_metadata", {}),
-                            id=msg_data.get("id"),
-                            name=msg_data.get("name"),
-                            tool_calls=msg_data.get("tool_calls", []),
-                            invalid_tool_calls=msg_data.get("invalid_tool_calls", []),
-                            usage_metadata=msg_data.get("usage_metadata"),
-                        )
-                        messages.append(ai_msg)
-                    elif msg_type == "tool":
-                        messages.append(ToolMessage(
-                            content=content,
-                            tool_call_id=msg_data.get("tool_call_id", "")
-                        ))
+                    if msg_role == "system":
+                        # messages.append(SystemMessage(content=content))
+                        messages.append({"role": "system", "content": content})
+                    elif msg_role == "human":
+                        messages.append({"role": "user", "content": content})
+                    elif msg_role == "assistant":
+                        # ai_msg = AIMessage(
+                        #     content=content,
+                        #     additional_kwargs=msg_data.get("additional_kwargs", {}),
+                        #     response_metadata=msg_data.get("response_metadata", {}),
+                        #     id=msg_data.get("id"),
+                        #     name=msg_data.get("name"),
+                        #     tool_calls=msg_data.get("tool_calls", []),
+                        #     invalid_tool_calls=msg_data.get("invalid_tool_calls", []),
+                        #     usage_metadata=msg_data.get("usage_metadata"),
+                        # )
+                        messages.append({"role": "assistant", "content": content, "reasoning_content": msg_data.get("reasoning_content", ""), "tool_calls": msg_data.get("tool_calls", [])})
+                    elif msg_role == "tool":
+                        # messages.append(ToolMessage(
+                        #     content=content,
+                        #     tool_call_id=msg_data.get("tool_call_id", "")
+                        # ))
+                        messages.append({"role": "tool", "content": content, "tool_call_id": msg_data.get("tool_call_id", "")})
         except Exception as e:
             print(f"加载会话历史失败: {e}")
 
@@ -148,7 +149,7 @@ class SessionManager:
 
         旧版本代码把工具结果存成了 HumanMessage，导致 OpenAI API 要求
         tool_calls 后必须跟 ToolMessage 的校验失败。此函数在加载历史时
-        自动将这类脏数据转换为 ToolMessage。
+        自动将这类脏数据转换为 role=tool 的消息。
         """
         fixed = []
         i = 0
@@ -156,28 +157,33 @@ class SessionManager:
             msg = messages[i]
             fixed.append(msg)
 
-            # 检查当前消息是否是带 tool_calls 的 AIMessage
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                tool_call_ids = {tc["id"] for tc in msg.tool_calls if "id" in tc}
-                # 查看下一条消息是否是 HumanMessage 且包含工具结果
+            # 检查当前消息是否是带 tool_calls 的 assistant 消息
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tool_call_ids = {
+                    tc["id"]
+                    for tc in msg["tool_calls"]
+                    if isinstance(tc, dict) and "id" in tc
+                }
+                # 查看下一条消息是否是 user 消息且包含工具结果
                 if i + 1 < len(messages):
                     next_msg = messages[i + 1]
-                    if isinstance(next_msg, HumanMessage) and isinstance(next_msg.content, str):
+                    if next_msg.get("role") == "user" and isinstance(next_msg.get("content"), str):
                         # 尝试解析旧格式的工具结果
                         try:
-                            results = json.loads(next_msg.content)
+                            results = json.loads(next_msg["content"])
                             if isinstance(results, list) and results and all(
                                 isinstance(r, dict) and "tool_id" in r for r in results
                             ):
-                                # 这是旧格式的工具结果，转换为 ToolMessage
+                                # 这是旧格式的工具结果，转换为 tool 消息
                                 for r in results:
                                     tc_id = r.get("tool_id", "")
                                     if tc_id in tool_call_ids:
-                                        fixed.append(ToolMessage(
-                                            content=json.dumps(r, ensure_ascii=False),
-                                            tool_call_id=tc_id,
-                                        ))
-                                i += 1  # 跳过已处理的 HumanMessage
+                                        fixed.append({
+                                            "role": "tool",
+                                            "content": json.dumps(r, ensure_ascii=False),
+                                            "tool_call_id": tc_id,
+                                        })
+                                i += 1  # 跳过已处理的 user 消息
                         except (json.JSONDecodeError, TypeError):
                             pass
             i += 1
@@ -186,23 +192,23 @@ class SessionManager:
 
     def _sanitize_orphan_tool_calls(self, messages: list) -> list:
         """
-        清理孤儿 AIMessage：带 tool_calls 但其后没有匹配 ToolMessage 的情况。
+        清理孤儿 assistant 消息：带 tool_calls 但其后没有匹配 tool 消息的情况。
 
-        当会话文件因进程崩溃 / Ctrl+C 在 AIMessage 落盘后、ToolMessage 落盘前被
+        当会话文件因进程崩溃 / Ctrl+C 在 assistant 消息落盘后、tool 消息落盘前被
         中断时，加载整段历史直接回传 OpenAI 会触发：
             BadRequestError: An assistant message with 'tool_calls' must be
             followed by tool messages responding to each 'tool_call_id'.
-        本函数扫描消息列表，对每个带 tool_calls 的 AIMessage，验证紧随其后的
-        ToolMessage 是否覆盖了全部 tool_call_id；缺失则丢弃该 AIMessage 以及
-        它后面紧跟的任何错位 ToolMessage。
+        本函数扫描消息列表，对每个带 tool_calls 的 assistant 消息，验证紧随其后
+        的 tool 消息是否覆盖了全部 tool_call_id；缺失则丢弃该 assistant 消息
+        以及它后面紧跟的任何错位 tool 消息。
         """
         sanitized = []
         i = 0
         while i < len(messages):
             msg = messages[i]
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 expected_ids = {
-                    tc["id"] for tc in msg.tool_calls
+                    tc["id"] for tc in msg["tool_calls"]
                     if isinstance(tc, dict) and "id" in tc
                 }
                 if not expected_ids:
@@ -212,9 +218,9 @@ class SessionManager:
 
                 j = i + 1
                 found_ids: set[str] = set()
-                while j < len(messages) and isinstance(messages[j], ToolMessage):
-                    if messages[j].tool_call_id in expected_ids:
-                        found_ids.add(messages[j].tool_call_id)
+                while j < len(messages) and messages[j].get("role") == "tool":
+                    if messages[j].get("tool_call_id") in expected_ids:
+                        found_ids.add(messages[j].get("tool_call_id"))
                     j += 1
                     if found_ids == expected_ids:
                         break
@@ -226,7 +232,7 @@ class SessionManager:
                     missing = expected_ids - found_ids
                     dropped_tools = j - i - 1
                     print(
-                        f"\033[33m[会话修复] 丢弃孤儿 AIMessage "
+                        f"\033[33m[会话修复] 丢弃孤儿 assistant 消息 "
                         f"（缺失 tool 响应: {sorted(missing)}，"
                         f"丢弃错位 tool 消息: {dropped_tools} 条）\033[0m"
                     )
@@ -237,41 +243,27 @@ class SessionManager:
         return sanitized
 
     def _message_to_json_row(self, message) -> dict:
-        """将 LangChain 消息对象转换为 jsonl 行。"""
-        msg_data = {}
-
-        if isinstance(message, SystemMessage):
-            msg_data["type"] = "system"
-            msg_data["content"] = message.content
-        elif isinstance(message, HumanMessage):
-            msg_data["type"] = "human"
-            msg_data["content"] = message.content
-        elif isinstance(message, AIMessage):
-            msg_data["type"] = "ai"
-            msg_data["content"] = message.content
-            if message.additional_kwargs:
-                msg_data["additional_kwargs"] = self._json_safe(message.additional_kwargs)
-            if message.response_metadata:
-                msg_data["response_metadata"] = self._json_safe(message.response_metadata)
-            if message.id:
-                msg_data["id"] = message.id
-            if message.name:
-                msg_data["name"] = message.name
-            if hasattr(message, "tool_calls") and message.tool_calls:
-                msg_data["tool_calls"] = self._json_safe(message.tool_calls)
-            if hasattr(message, "invalid_tool_calls") and message.invalid_tool_calls:
-                msg_data["invalid_tool_calls"] = self._json_safe(message.invalid_tool_calls)
-            if getattr(message, "usage_metadata", None):
-                msg_data["usage_metadata"] = self._json_safe(message.usage_metadata)
-        elif isinstance(message, ToolMessage):
-            msg_data["type"] = "tool"
-            msg_data["content"] = message.content
-            msg_data["tool_call_id"] = message.tool_call_id
+        """将 OpenAI JSON 格式消息转换为 jsonl 行（与 load_session_history 读取结构保持一致）。"""
+        role = message.get("role")
+        if role == "system":
+            return {"role": "system", "content": message.get("content", "")}
+        elif role == "user":
+            return {"role": "user", "content": message.get("content", "")}
+        elif role == "assistant":
+            return {
+                "role": "assistant",
+                "content": message.get("content", ""),
+                "reasoning_content": message.get("reasoning_content", ""),
+                "tool_calls": message.get("tool_calls", []),
+            }
+        elif role == "tool":
+            return {
+                "role": "tool",
+                "content": message.get("content", ""),
+                "tool_call_id": message.get("tool_call_id", ""),
+            }
         else:
-            msg_data["type"] = "unknown"
-            msg_data["content"] = str(message)
-
-        return msg_data
+            return {"role": "unknown", "content": str(message.get("content", ""))}
 
     def _json_safe(self, value):
         """确保 LangChain 附加元数据可以稳定写入 jsonl。"""
@@ -355,6 +347,16 @@ class SessionManager:
         return result
 
     def _print_compact_result(self, result, force: bool = False) -> None:
+        """
+        以黄色提示行打印 compact 后的结果摘要。
+
+        - `result.before is None` 时直接返回（压缩未实际执行）。
+        - 若 `result.changed` 为 False：打印“无需压缩”一行，区分是否因 force
+          而给出不同原因。
+        - 若发生压缩：根据 `result.operations` 拼接各阶段操作（落盘超大工具
+          输出 / 裁掉中间消息 / 旧工具结果占位 / LLM 摘要替换 / reactive
+          兜底），再附上压缩后的 token 用量与剩余比例。
+        """
         before = result.before
         after = result.after
         if before is None:
@@ -384,7 +386,7 @@ class SessionManager:
         after_text = f"{after.used_tokens}/{after.max_label} tokens，剩余 {int(after.remaining_percent)}%" if after else "未知"
         print(f"\033[33m[上下文压缩完成] {summary}；压缩后 {after_text}\033[0m")
 
-    def _build_workspace_instruction_message(self) -> Optional[HumanMessage]:
+    def _build_workspace_instruction_message(self) -> Dict[str, str]:
         """
         读取 workspace 根目录下的指令文件，并构造为一条 HumanMessage。
 
@@ -410,7 +412,7 @@ class SessionManager:
         if not sections:
             return None
 
-        return HumanMessage(content="\n\n".join(sections))
+        return {"role": "user", "content": "\n\n".join(sections)}
 
     def _build_initial_messages(self) -> list:
         """
@@ -419,7 +421,7 @@ class SessionManager:
         始终第一条为 SystemMessage；如果 workspace 根目录存在 CLAUDE.md
         或 AGENT.md，则追加一条 HumanMessage 承载这些文件内容。
         """
-        messages = [SystemMessage(content=self.system_prompt)]
+        messages = [{"role": "system", "content": self.system_prompt}]
         workspace_instruction_msg = self._build_workspace_instruction_message()
         if workspace_instruction_msg is not None:
             messages.append(workspace_instruction_msg)
