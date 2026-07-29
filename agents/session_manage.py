@@ -22,9 +22,7 @@ from context_compact import ContextCompact
 
 
 class SessionManager:
-    """会话管理器，负责对话历史的持久化存储和管理"""
-
-    WORKSPACE_INSTRUCTION_FILES = ("CLAUDE.md", "AGENT.md")
+    """会话管理器，负责对话历史的持久化和管理"""
 
     def __init__(self, chat_history_dir: Path, system_prompt: str):
         """
@@ -422,46 +420,14 @@ class SessionManager:
         after_text = f"{after.used_tokens}/{after.max_label} tokens，剩余 {int(after.remaining_percent)}%" if after else "未知"
         print(f"\033[33m[上下文压缩完成] {summary}；压缩后 {after_text}\033[0m")
 
-    def _build_workspace_instruction_message(self) -> dict:
-        """
-        读取 workspace 根目录下的指令文件，并构造为一条 HumanMessage。
-
-        文件读取顺序固定为 CLAUDE.md -> AGENT.md。只检查 workspace 根目录，
-        不递归子目录。
-        """
-        workspace_dir = self.chat_history_dir.parent
-        sections = []
-
-        for filename in self.WORKSPACE_INSTRUCTION_FILES:
-            instruction_file = workspace_dir / filename
-            if not instruction_file.is_file():
-                continue
-
-            try:
-                content = instruction_file.read_text(encoding="utf-8")
-            except Exception as e:
-                print(f"读取 workspace 指令文件失败: {instruction_file}: {e}")
-                continue
-
-            sections.append(f"以下是 workspace/{filename} 内容：\n\n{content}")
-
-        if not sections:
-            return None
-
-        return {"role": "user", "content": "\n\n".join(sections)}
-
     def _build_initial_messages(self) -> list:
         """
         构造新会话的初始消息。
 
-        始终第一条为 SystemMessage；如果 workspace 根目录存在 CLAUDE.md
-        或 AGENT.md，则追加一条 HumanMessage 承载这些文件内容。
+        第一条为 SystemMessage；workspace 指令文件（CLAUDE.md / AGENT.md）
+        已在 system_prompt 构造阶段拼入，不再单独注入 user 消息。
         """
-        messages = [{"role": "system", "content": self.system_prompt}]
-        workspace_instruction_msg = self._build_workspace_instruction_message()
-        if workspace_instruction_msg is not None:
-            messages.append(workspace_instruction_msg)
-        return messages
+        return [{"role": "system", "content": self.system_prompt}]
 
     def create_initialized_session(self) -> tuple[int, Path, list]:
         """

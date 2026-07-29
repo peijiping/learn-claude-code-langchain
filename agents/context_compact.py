@@ -179,20 +179,6 @@ class ContextCompact:
 
 
 
-
-
-    def is_workspace_instruction(self, msg) -> bool:
-        """判断 msg 是否为 SessionManager 启动时写入的 workspace 规则注入消息。"""
-        return (
-            isinstance(msg, dict)
-            and msg["role"] == "user"
-            and isinstance(msg["content"], str)
-            and (
-                "以下是 workspace/CLAUDE.md 内容：" in msg["content"]
-                or "以下是 workspace/AGENT.md 内容：" in msg["content"]
-            )
-        )
-
     def message_to_dict(self, msg) -> dict:
         """把 LangChain 消息转成 dict 便于 jsonl 落盘。"""
         if isinstance(msg, dict) and msg["role"] == "system":
@@ -444,11 +430,8 @@ class ContextCompact:
         return path
 
     def _protected_prefix_end(self, messages: list) -> int:
-        """返回受保护前缀的结束位置：SystemMessage + workspace 指令注入（不能进摘要）。"""
-        end = 1 if messages and messages[0].role == "system" else 0
-        if len(messages) > end and self.is_workspace_instruction(messages[end]):
-            end += 1
-        return end
+        """返回受保护前缀的结束位置：仅 SystemMessage（不能进摘要）。"""
+        return 1 if messages and messages[0].role == "system" else 0
 
     def _find_ai_with_tool_call(self, messages: list, before_index: int, tool_call_id: str) -> Optional[int]:
         """从 before_index 往前找含指定 tool_call_id 的 AIMessage；遇到 HumanMessage 停止（跨轮无意义）。"""

@@ -1,17 +1,45 @@
 """主智能体系统提示词
 
 把 SYSTEM prompt 从 agent_full_v2.py 抽出来，让主循环代码保持简洁。
-动态部分（工作目录、技能描述、记忆索引）在调用时注入。
+动态部分（工作目录、技能描述、记忆索引、workspace 指令文件）在调用时注入。
 """
 
-from tools import WORKDIR, SKILLS_DIR, MEMORY
+from pathlib import Path
+
+from tools import WORKDIR, SKILLS_DIR, MEMORY, CHAT_HISTORY_DIR
 from skills import SkillLoader
 
 SKILLS = SkillLoader(SKILLS_DIR)
 
+# workspace 根目录下注入到 system prompt 的指令文件（按顺序拼接）
+WORKSPACE_INSTRUCTION_FILES = ("CLAUDE.md", "AGENT.md")
+
+
+def _load_workspace_instructions() -> str:
+    """
+    读取 workspace 根目录下的指令文件（CLAUDE.md / AGENT.md），拼成一段 system 段。
+    不递归子目录；任一文件缺失则跳过。
+    """
+    workspace_dir = CHAT_HISTORY_DIR.parent
+    sections: list[str] = []
+    for filename in WORKSPACE_INSTRUCTION_FILES:
+        instruction_file = workspace_dir / filename
+        if not instruction_file.is_file():
+            continue
+        try:
+            content = Path(instruction_file).read_text(encoding="utf-8")
+        except Exception as e:
+            print(f"读取Workspace工作目录下的指令文件失败: {instruction_file}: {e}")
+            continue
+        sections.append(f"以下是Workspace工作目录下的 {filename} 文件内容：{content}\n")
+    return "\n\n".join(sections)
 
 
 def build_system_prompt() -> str:
+    workspace_section = _load_workspace_instructions()
+    workspace_block = (
+        f"\n\n{workspace_section}\n" if workspace_section else ""
+    )
     return f"""
 你是一个专业的编程助手，工作目录是 {WORKDIR}，所有操作仅限在该目录下进行。
 遇到复杂问题时可以先生成 shell 脚本或 python 脚本再执行。
@@ -134,8 +162,6 @@ Skills 可使用列表：
 - **project**：当前目标、截止日期、架构决策（如"用 PostgreSQL 16"）
 - **reference**：外部资源指针（如"API 文档在 docs.example.com"）
 
-## 如何使用记忆
-- 每轮开始前先扫一眼上面的索引，若有与当前任务相关的记忆，用 `read_file .memory/<文件名>` 读全文
-- 如果用户行为与已存记忆矛盾，先调 `forget_memory` 删旧条，再按新事实写新条
-- 保持条目简洁、客观；每条一句话即可
+{workspace_block}
+
 """
