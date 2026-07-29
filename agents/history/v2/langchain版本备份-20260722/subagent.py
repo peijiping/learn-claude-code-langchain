@@ -6,12 +6,15 @@ subagent.py - 通用型子智能体模块
 子智能体默认拥有全部工具权限，通过 prompt 引导行为，而非通过类型限制。
 支持通过 system_prompt 和 allowed_tools 参数自定义子智能体的能力和角色。
 """
-import os
+
 import json
 
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+from llm_manage import create_llm_with_tools
 from tools import WORKDIR
 from hooks import HookSystem
-from llm_manage import LLMClient
+
 
 class SubAgent:
     """
@@ -50,8 +53,6 @@ class SubAgent:
             hook_system = HookSystem()
             hook_system.register_default_hooks()
         self.hook_system = hook_system
-        self.sub_llm_client = LLMClient().llm
-        self.model = os.environ.get("OPENAI_MODEL_ID", "")
 
     @staticmethod
     def _extract_content(response) -> str:
@@ -89,14 +90,15 @@ class SubAgent:
             str: 任务执行结果的摘要文本，如果无结果则返回 "(no summary)"
         """
         if allowed_tools is not None:
-            sub_tools = [t for t in self.base_tools if t.get("function").get("name") in allowed_tools]
+            sub_tools = [t for t in self.base_tools if t["name"] in allowed_tools]
         else:
             sub_tools = self.base_tools
 
         sub_system = system_prompt or self.DEFAULT_SYSTEM_PROMPT
 
-        sub_messages = [{"role": "system", "content": sub_system}]
-        sub_messages.append({"role": "user", "content": prompt})
+        sub_messages = [SystemMessage(content=sub_system)]
+        sub_messages.append(HumanMessage(content=prompt))
+        sub_llm_with_tools = create_llm_with_tools(sub_tools)
 
         tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
         print(f"  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...")
@@ -104,45 +106,33 @@ class SubAgent:
         sub_response = None
         for iteration in range(self.MAX_ITERATIONS):
             try:
-                sub_response = self.sub_llm_client.chat.completions.create(
-                    model=self.model,
-                    messages=sub_messages,
-                    tools=sub_tools,
-                    stream=False, #是否流式输出，默认 False
-                    max_tokens=4000,
-                    temperature=0.5,
-                    reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
-                    extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
-        )
+                sub_response = sub_llm_with_tools.invoke(sub_messages)
             except Exception as e:
                 error_msg = f"子智能体 API 调用失败 (第 {iteration + 1} 轮): {type(e).__name__}: {e}"
                 print(f"  [subagent] {error_msg}")
                 return error_msg
-            sub_msg = sub_response.choices[0].message
-            sub_messages.append(sub_msg.model_dump())
 
-            if not hasattr(sub_msg, "tool_calls") or not sub_msg.tool_calls:
-                content = self._extract_content(sub_msg.model_dump())
+            sub_messages.append(sub_response)
+
+            if not hasattr(sub_response, "tool_calls") or not sub_response.tool_calls:
+                content = self._extract_content(sub_response)
                 return content or "(no summary)"
 
-            for tool_call in sub_msg.tool_calls:
-                tool_id = tool_call.id
-                tool_name = tool_call.function.name
-                # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能 ** 解包
-                raw_args = tool_call.function.arguments
-                tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            for tool_call in sub_response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_id = tool_call["id"]
 
-                if tool_name:
+                if tool_call["name"]:
                     # hooks: PreToolUse
                     blocked = self.hook_system.trigger("PreToolUse", tool_call)
                     if blocked:
-                        sub_messages.append({"role": "tool", "tool_use_id": tool_id,
+                        sub_messages.append({"type": "tool_result", "tool_use_id": tool_call["id"],
                                              "content": str(blocked)})
                         continue
                     handler = self.tool_handlers.get(tool_name)
                     if handler:
                         try:
-                            output = handler(**tool_args)
+                            output = handler(**tool_call["args"])
                         except Exception as e:
                             output = f"Error executing {tool_name}: {e}"
                         # hooks: PostToolUse
@@ -150,23 +140,29 @@ class SubAgent:
                     else:
                         output = f"Unknown tool: {tool_name}"
                     result = {
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": str(output),
+                        "type": "tool_result",
+                        "tool_name": tool_name,
+                        "tool_args": tool_call["args"],
+                        "tool_id": tool_id,
+                        "tool_output": str(output),
                     }
                 else:
                     result = {
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": "Error: tool call missing name",
+                        "type": "tool_result",
+                        "tool_id": tool_id,
+                        "tool_output": "Error: tool call missing name",
                     }
-                sub_messages.append(result)
+                sub_messages.append(
+                    ToolMessage(
+                        content=json.dumps(result, ensure_ascii=False),
+                        tool_call_id=tool_id,
+                    )
+                )
 
-            print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_msg.tool_calls)} 个工具调用")
+            print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_response.tool_calls)} 个工具调用")
 
         # 达到最大轮次，尝试从最后一轮响应中提取内容返回
-        last_msg = sub_response.choices[0].message
-        content = self._extract_content(last_msg) if last_msg else ""
+        content = self._extract_content(sub_response) if sub_response else ""
         if content:
             return f"[达到最大轮次限制，返回最后一轮摘要]\n{content}"
         return "(no summary: 达到最大轮次限制且最后一轮无内容)"

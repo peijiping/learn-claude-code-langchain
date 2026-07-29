@@ -1,32 +1,39 @@
 #!/usr/bin/env python3
 """
-s09_memory.py - Memory System
+s09_code_cc.py —— 记忆系统 v2 (贴合真实 CC 行为)
+═══════════════════════════════════════════════════
+相对 s09_code.py 的核心改动：
 
-Persistent, cross-session knowledge for the coding agent.
+  [改动 1] 移除"事后分析"模式
+    删掉 select_relevant_memories / load_memories / extract_memories /
+    consolidate_memories —— 不再每轮结束额外调 LLM 抽取记忆。
 
-Storage:
-    .memory/
-      MEMORY.md          ← index (one line per memory, ≤200 lines)
-      feedback_tabs.md    ← individual memory files (Markdown + YAML frontmatter)
-      user_profile.md
-      project_facts.md
+  [改动 2] 记忆写入改为 Tool
+    新增 write_memory / forget_memory 两个工具，模型在对话中自行判断
+    何时调用，即时落盘。无需额外 LLM 调用。
 
-Flow in agent_loop:
-    1. Load MEMORY.md index into SYSTEM prompt (cheap, always present)
-    2. Select relevant memories by filename/description → inject content
-    3. Run compression pipeline from s08
-    4. After each turn ends → extract new memories from original messages
-    5. Periodically consolidate (Dream)
+  [改动 3] 取消记忆正文注入
+    MEMORY.md 索引始终在 SYSTEM 提示中（模型能看到"有什么"），
+    但不再向用户消息前面拼接记忆正文。模型需要详情时可调 read_file 读。
 
-Builds on s08 (context compact). Usage:
+  [改动 4] SYSTEM 提示加入触发规则
+    告诉模型在哪些场景下应该调用 write_memory / forget_memory，
+    而非依赖"事后分析"。
 
-    python s09_memory/code.py
-    Needs: pip install anthropic python-dotenv + ANTHROPIC_API_KEY in .env
+  [改动 5] agent_loop 简化
+    去掉 pre_compress 快照、memory_turn 追踪、reactive_compact ——
+    这些是 s08 压缩管道的残留，与记忆无关。
+
+依赖：s08 (context compact)
+使用：
+    python s09_memory/s09_code_cc.py
+    需要：pip install anthropic python-dotenv  +  .env 中配置 ANTHROPIC_API_KEY
 """
 
 import os, subprocess, json, time, re
 from pathlib import Path
 
+# ─── readline 增强 ───────────────────────────────────────────────────
 try:
     import readline
     readline.parse_and_bind('set bind-tty-special-chars off')
@@ -39,6 +46,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 if os.getenv("ANTHROPIC_BASE_URL"): os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
+# ─── 路径与客户端初始化 ────────────────────────────────────────────
 WORKDIR = Path.cwd()
 MEMORY_DIR = WORKDIR / ".memory"; MEMORY_DIR.mkdir(exist_ok=True)
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
@@ -48,14 +56,20 @@ TOOL_RESULTS_DIR = WORKDIR / ".task_outputs" / "tool-results"
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 MODEL = os.environ["MODEL_ID"]
 
+# ─── [改动 1] 删除：MEMORY_TYPES（不再需要全局常量） ───────────────
+# 原 s09_code.py: MEMORY_TYPES = ["user", "feedback", "project", "reference"]
+# 改为：类型定义直接写进 write_memory tool 的 input_schema enum 中
+
 
 # ═══════════════════════════════════════════════════════════
-#  NEW in s09: Memory System
+#  记忆文件基础设施（与 s09_code.py 相同，保留复用）
 # ═══════════════════════════════════════════════════════════
-
-MEMORY_TYPES = ["user", "feedback", "project", "reference"]
+#  保留原因：write_memory_file / _rebuild_index / read_memory_index /
+#  read_memory_file / list_memory_files / _parse_frontmatter 是基础的
+#  文件存储层，Tool handler 和 SYSTEM 都需要它们。
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """极简 YAML frontmatter 解析器。"""
     if not text.startswith("---"):
         return {}, text
     parts = text.split("---", 2)
@@ -70,7 +84,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def write_memory_file(name: str, mem_type: str, description: str, body: str):
-    """Write a single memory file with YAML frontmatter."""
+    """写入单条记忆文件，并重建索引。"""
     slug = name.lower().replace(" ", "-").replace("/", "-")
     filename = f"{slug}.md"
     filepath = MEMORY_DIR / filename
@@ -82,7 +96,7 @@ def write_memory_file(name: str, mem_type: str, description: str, body: str):
 
 
 def _rebuild_index():
-    """Rebuild MEMORY.md index from all memory files."""
+    """扫描 MEMORY_DIR 下所有 *.md，重建 MEMORY.md 索引。"""
     lines = []
     for f in sorted(MEMORY_DIR.glob("*.md")):
         if f.name == "MEMORY.md":
@@ -96,254 +110,107 @@ def _rebuild_index():
 
 
 def read_memory_index() -> str:
-    """Read MEMORY.md index (injected into SYSTEM every turn)."""
+    """读 MEMORY.md 索引全文。注入 SYSTEM 提示用。"""
     if not MEMORY_INDEX.exists():
         return ""
     text = MEMORY_INDEX.read_text().strip()
     return text if text else ""
 
 
-def read_memory_file(filename: str) -> str | None:
-    """Read a single memory file's full content."""
-    path = MEMORY_DIR / filename
-    if not path.exists():
-        return None
-    return path.read_text()
+# ─── [改动 2] 新增：记忆写入/删除工具 handler ──────────────────────
 
-
-def list_memory_files() -> list[dict]:
-    """List all memory files with metadata."""
-    result = []
-    for f in sorted(MEMORY_DIR.glob("*.md")):
-        if f.name == "MEMORY.md":
-            continue
-        raw = f.read_text()
-        meta, body = _parse_frontmatter(raw)
-        result.append({
-            "filename": f.name,
-            "name": meta.get("name", f.stem),
-            "description": meta.get("description", ""),
-            "type": meta.get("type", "user"),
-            "body": body,
-        })
-    return result
-
-
-def select_relevant_memories(messages: list, max_items: int = 5) -> list[str]:
-    """Select relevant memory filenames by matching recent conversation against
-    memory names/descriptions. Uses a simple LLM call (or falls back to keyword
-    matching on name+description)."""
-    files = list_memory_files()
-    if not files:
-        return []
-
-    # Collect recent user text for context
-    recent_texts = []
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                content = " ".join(
-                    str(getattr(b, "text", "")) for b in content
-                    if getattr(b, "type", None) == "text"
-                )
-            if isinstance(content, str):
-                recent_texts.append(content)
-            if len(recent_texts) >= 3:
-                break
-    recent = " ".join(reversed(recent_texts))[:2000]
-
-    if not recent.strip():
-        return []
-
-    # Build catalog of name + description for LLM to choose from
-    catalog_lines = []
-    for i, f in enumerate(files):
-        catalog_lines.append(f"{i}: {f['name']} — {f['description']}")
-    catalog = "\n".join(catalog_lines)
-
-    prompt = (
-        "Given the recent conversation and the memory catalog below, "
-        "select the indices of memories that are clearly relevant. "
-        "Return ONLY a JSON array of integers, e.g. [0, 3]. "
-        "If none are relevant, return [].\n\n"
-        f"Recent conversation:\n{recent}\n\n"
-        f"Memory catalog:\n{catalog}"
-    )
-
+def run_write_memory(name: str, mem_type: str, description: str, body: str) -> str:
+    """
+    write_memory 工具的实际处理函数。
+    模型通过 tool call 调用此函数，即时落盘。
+    """
     try:
-        response = client.messages.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-        )
-        text = extract_text(response.content).strip()
-        # Extract JSON array from response
-        match = re.search(r'\[.*?\]', text, re.DOTALL)
-        if match:
-            indices = json.loads(match.group())
-            selected = []
-            for idx in indices:
-                if isinstance(idx, int) and 0 <= idx < len(files):
-                    selected.append(files[idx]["filename"])
-                    if len(selected) >= max_items:
-                        break
-            return selected
-    except Exception:
-        pass
-
-    # Fallback: keyword matching on name + description
-    keywords = [w.lower() for w in recent.split() if len(w) > 3]
-    selected = []
-    for f in files:
-        text = (f["name"] + " " + f["description"]).lower()
-        if any(kw in text for kw in keywords):
-            selected.append(f["filename"])
-            if len(selected) >= max_items:
-                break
-    return selected
+        path = write_memory_file(name, mem_type, description, body)
+        print(f"\033[33m[Memory saved: {name} ({mem_type})]\033[0m")
+        return f"Saved memory to {path.name}"
+    except Exception as e:
+        return f"Error saving memory: {e}"
 
 
-def load_memories(messages: list) -> str:
-    """Load relevant memory content for injection into context."""
-    selected_files = select_relevant_memories(messages)
-    if not selected_files:
-        return ""
-
-    parts = ["<relevant_memories>"]
-    for filename in selected_files:
-        content = read_memory_file(filename)
-        if content:
-            parts.append(content)
-    parts.append("</relevant_memories>")
-    return "\n\n".join(parts)
-
-
-def extract_memories(messages: list):
-    """Extract new memories from recent dialogue. Runs after each turn."""
-    # Collect recent conversation text
-    dialogue_parts = []
-    for msg in messages[-10:]:
-        role = msg.get("role", "?")
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                str(getattr(b, "text", "")) for b in content
-                if getattr(b, "type", None) == "text"
-            )
-        if isinstance(content, str) and content.strip():
-            dialogue_parts.append(f"{role}: {content}")
-    dialogue = "\n".join(dialogue_parts)
-
-    if not dialogue.strip():
-        return
-
-    # Check existing memories to avoid duplicates
-    existing = list_memory_files()
-    existing_desc = "\n".join(f"- {m['name']}: {m['description']}" for m in existing) if existing else "(none)"
-
-    prompt = (
-        "Extract user preferences, constraints, or project facts from this dialogue.\n"
-        "Return a JSON array. Each item: {name, type, description, body}.\n"
-        "- name: short kebab-case identifier (e.g. 'user-preference-tabs')\n"
-        "- type: one of 'user' (user preference), 'feedback' (guidance), "
-        "'project' (project fact), 'reference' (external pointer)\n"
-        "- description: one-line summary for index lookup\n"
-        "- body: full detail in markdown\n"
-        "If nothing new or already covered by existing memories, return [].\n\n"
-        f"Existing memories:\n{existing_desc}\n\n"
-        f"Dialogue:\n{dialogue[:4000]}"
-    )
-
+def run_forget_memory(name: str) -> str:
+    """
+    forget_memory 工具的实际处理函数。
+    模型调用此函数删除一条记忆。
+    """
     try:
-        response = client.messages.create(
-            model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=800
-        )
-        text = extract_text(response.content).strip()
-        # Extract JSON array from response
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if not match:
-            return
-        items = json.loads(match.group())
-        if not items:
-            return
-        count = 0
-        for mem in items:
-            name = mem.get("name", f"memory_{int(time.time())}")
-            mem_type = mem.get("type", "user")
-            desc = mem.get("description", "")
-            body = mem.get("body", "")
-            if desc and body:
-                write_memory_file(name, mem_type, desc, body)
-                count += 1
-        if count:
-            print(f"\n\033[33m[Memory: extracted {count} new memories]\033[0m")
-    except Exception:
-        pass
+        slug = name.lower().replace(" ", "-").replace("/", "-")
+        path = MEMORY_DIR / f"{slug}.md"
+        if not path.exists():
+            # 也尝试直接按文件名加载（模型可能传已有 slug）
+            path = MEMORY_DIR / name
+            if not path.exists():
+                return f"Error: memory '{name}' not found"
+        path.unlink()
+        _rebuild_index()
+        print(f"\033[33m[Memory deleted: {name}]\033[0m")
+        return f"Deleted memory '{name}'"
+    except Exception as e:
+        return f"Error deleting memory: {e}"
 
 
-CONSOLIDATE_THRESHOLD = 10
-
-def consolidate_memories():
-    """Merge duplicate/stale memories. Triggered when file count ≥ threshold."""
-    files = list_memory_files()
-    if len(files) < CONSOLIDATE_THRESHOLD:
-        return
-
-    catalog = "\n\n".join(
-        f"## {f['filename']}\nname: {f['name']}\ndescription: {f['description']}\n{f['body']}"
-        for f in files
-    )
-
-    prompt = (
-        "Consolidate the following memory files. Rules:\n"
-        "1. Merge duplicates into one\n"
-        "2. Remove outdated/contradicted memories\n"
-        "3. Keep the total under 30 memories\n"
-        "4. Preserve important user preferences above all\n"
-        "Return a JSON array. Each item: {name, type, description, body}.\n\n"
-        f"{catalog[:16000]}"
-    )
-
-    try:
-        response = client.messages.create(
-            model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=3000
-        )
-        text = extract_text(response.content).strip()
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if not match:
-            return
-        items = json.loads(match.group())
-
-        # Remove old memory files (keep MEMORY.md)
-        for f in MEMORY_DIR.glob("*.md"):
-            if f.name != "MEMORY.md":
-                f.unlink()
-
-        for mem in items:
-            name = mem.get("name", f"memory_{int(time.time())}")
-            mem_type = mem.get("type", "user")
-            desc = mem.get("description", "")
-            body = mem.get("body", "")
-            if desc and body:
-                write_memory_file(name, mem_type, desc, body)
-
-        print(f"\n\033[33m[Memory: consolidated {len(files)} → {len(items)} memories]\033[0m")
-    except Exception:
-        pass
+# ─── [改动 3] 删除：load_memories / select_relevant_memories ─────────
+# 原 s09_code.py 中有以下函数被整体删除：
+#   - select_relevant_memories()    — 额外 LLM 调用选相关记忆
+#   - load_memories()               — 在 user 消息前拼记忆正文
+#   - extract_memories()            — turn 结束后分析对话抽取记忆
+#   - consolidate_memories()        — 全量整合/做梦
+#
+# 理由：这些函数依赖"事后分析"模式——每轮结束额外调 LLM 去猜哪些值得记。
+# 真实 CC 的模式是"模型在对话中即时判断"，通过 write_memory tool 直接写。
 
 
-# Build SYSTEM with memory index
+# ═══════════════════════════════════════════════════════════
+#  [改动 4] SYSTEM 提示：加入触发规则
+# ═══════════════════════════════════════════════════════════
+
 def build_system() -> str:
+    """
+    拼装 SYSTEM 提示。
+    关键变化：加入明确的记忆触发规则，模型据此决定何时调 write_memory。
+    MEMORY.md 索引始终在提示中，模型能直接看到已有什么记忆。
+    """
     index = read_memory_index()
-    memories_section = f"\n\nMemories available:\n{index}" if index else ""
+    memories_section = f"\n\n## Available memories (MEMORY.md index)\n{index}" if index else ""
+
+    # 显式的记忆触发规则（类似真实 CC 的 system prompt）
+    memory_rules = """
+## Memory system
+You have a persistent memory system at `.memory/`. You can save and retrieve facts across sessions.
+
+### When to save a memory
+Call `write_memory` when the user:
+- States a personal preference ("I like X", "don't use Y", "always do Z")
+- Corrects your approach ("no, do it this way")
+- Approves an approach ("yes, keep doing that", "good choice")
+- Reveals a project fact or constraint ("we're using X", "deadline is Y", "stakeholder is Z")
+- Mentions an external resource ("check the docs at ...", "bug tracker is ...")
+- Asks you to "remember" something explicitly
+
+### What to save
+- **user**: The user's role, preferences, habits (e.g. "prefers spaces over tabs")
+- **feedback**: Guidance about how to work (e.g. "don't mock databases in tests")
+- **project**: Current goals, deadlines, architecture decisions (e.g. "using PostgreSQL 16")
+- **reference**: Pointers to external resources (e.g. "API docs at docs.example.com")
+
+### How to use memories
+- Check the Available memories section above before each turn
+- If a memory is relevant to the current task, read its file with `read_file .memory/<filename>`
+- If the user contradicts a saved memory, call `forget_memory` to remove the old one
+- Keep memories concise and factual. One sentence per entry."""
     return (
         f"You are a coding agent at {WORKDIR}."
-        f"{memories_section}\n"
-        "Relevant memories are injected below. Respect user preferences from memory.\n"
-        "When the user says 'remember' or expresses a clear preference, extract it as a memory."
+        f"{memories_section}"
+        f"{memory_rules}"
     )
 
+
+# ─── 子 agent SYSTEM 提示（不加载记忆，子任务不需要知道记忆规则）───
+# [改动] 子 agent 不暴露记忆工具，避免子任务意外污染记忆
 SUB_SYSTEM = (
     f"You are a coding agent at {WORKDIR}. "
     "Complete the task you were given, then return a concise summary. "
@@ -352,7 +219,7 @@ SUB_SYSTEM = (
 
 
 # ═══════════════════════════════════════════════════════════
-#  FROM s02-s08 (skeleton): Basic tools
+#  FROM s02-s08: 基础工具集
 # ═══════════════════════════════════════════════════════════
 
 def safe_path(p: str) -> Path:
@@ -403,7 +270,7 @@ def extract_text(content) -> str:
     if not isinstance(content, list): return str(content)
     return "\n".join(getattr(b, "text", "") for b in content if getattr(b, "type", None) == "text")
 
-# Subagent (simplified from s06-s07)
+# ─── 子 agent ──────────────────────────────────────────────────────
 SUB_TOOLS = [
     {"name": "bash", "description": "Run a shell command.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
@@ -442,12 +309,13 @@ def spawn_subagent(description: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════
-#  FROM s08 (skeleton): Compaction pipeline
+#  FROM s08: 上下文压缩管道（保留，没改动）
 # ═══════════════════════════════════════════════════════════
 
 CONTEXT_LIMIT = 50000; KEEP_RECENT = 3; PERSIST_THRESHOLD = 30000
 
-def estimate_size(msgs): return len(str(msgs))
+def estimate_size(msgs):
+    return len(str(msgs))
 
 def _block_type(block):
     return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
@@ -538,25 +406,15 @@ def compact_history(msgs):
     summary = summarize_history(msgs)
     return [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
 
-def reactive_compact(msgs):
-    write_transcript(msgs)
-    tail_start = max(0, len(msgs) - 5)
-    if (tail_start > 0 and tail_start < len(msgs)
-            and _is_tool_result_message(msgs[tail_start])
-            and _message_has_tool_use(msgs[tail_start - 1])):
-        tail_start -= 1
-    summary = summarize_history(msgs[:tail_start])
-    return [{"role": "user", "content": f"[Reactive compact]\n\n{summary}"}, *msgs[tail_start:]]
-
 
 # ═══════════════════════════════════════════════════════════
-#  Tool Definitions (skeleton — fewer tools to focus on memory)
+#  [改动 2] TOOLS 定义：新增 write_memory / forget_memory
 # ═══════════════════════════════════════════════════════════
 
 TOOLS = [
     {"name": "bash", "description": "Run a shell command.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
-    {"name": "read_file", "description": "Read file contents.",
+    {"name": "read_file", "description": "Read file contents. Use `read_file .memory/<filename>` to read a memory's full details.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
     {"name": "write_file", "description": "Write content to a file.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
@@ -566,34 +424,78 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
     {"name": "task", "description": "Launch a subagent to handle a subtask.",
      "input_schema": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]}},
+    # ── [改动 2] 新增：记忆工具 ──────────────────────────────
+    {"name": "write_memory",
+     "description": "Save a piece of information to persistent memory. "
+                    "Use when the user states a preference, corrects you, "
+                    "approves an approach, reveals a project fact, or asks you to remember something. "
+                    "The memory will be available in future sessions.",
+     "input_schema": {"type": "object",
+       "properties": {
+         "name": {"type": "string", "description": "Short kebab-case identifier, e.g. 'user-preference-tabs'"},
+         "type": {"type": "string",
+                   "enum": ["user", "feedback", "project", "reference"],
+                   "description": "user=preference/habit, feedback=guidance/correction, project=fact/decision, reference=external pointer"},
+         "description": {"type": "string", "description": "One-line summary shown in MEMORY.md index"},
+         "body": {"type": "string", "description": "Full detail in markdown. Include context and rationale."}
+       },
+       "required": ["name", "type", "description", "body"]}},
+    {"name": "forget_memory",
+     "description": "Delete a memory by its name or filename. "
+                    "Use when the user contradicts a saved memory or asks you to forget something.",
+     "input_schema": {"type": "object",
+       "properties": {
+         "name": {"type": "string", "description": "Name of the memory to delete (slug or filename)"}
+       },
+       "required": ["name"]}},
 ]
 
 TOOL_HANDLERS = {
     "bash": run_bash, "read_file": run_read, "write_file": run_write,
     "edit_file": run_edit, "glob": run_glob, "task": spawn_subagent,
+    "write_memory": run_write_memory,       # [改动 2] 新增
+    "forget_memory": run_forget_memory,     # [改动 2] 新增
 }
 
 
 # ═══════════════════════════════════════════════════════════
-#  agent_loop — s09: inject memories + extract after each turn
+#  [改动 5] agent_loop 简化
 # ═══════════════════════════════════════════════════════════
+#  相对原版 s09_code.py 删除：
+#    - pre_compress 快照（不再事后抽取记忆，不需要了）
+#    - memory_turn 追踪（不再注入记忆正文）
+#    - memories_content / load_memories 调用
+#    - 压缩前快照保存
+#    - turn 结束后的 extract_memories + consolidate_memories
+#  保留：
+#    - s08 的三段压缩管道（budget → snip → micro）
+#    - compact_history 全量压缩
+#    - prompt_too_long 兜底
 
 MAX_REACTIVE_RETRIES = 1
 
 def agent_loop(messages: list):
+    """
+    主 agent 循环。
+    相对原版 s09 简化了记忆相关逻辑：
+    - 模型通过 write_memory/forget_memory 工具自主管理记忆
+    - 不再有"事后分析"抽取
+    - SYSTEM 提示中包含记忆索引和触发规则
+    """
     reactive_retries = 0
-    # s09: inject relevant memory content into the current user turn
-    memories_content = load_memories(messages)
-    memory_turn = len(messages) - 1 if messages and isinstance(messages[-1].get("content"), str) else None
-    # s09: build system once per user turn; memory is updated after the loop returns
+
+    # [改动 5] 删除：
+    #   memories_content = load_memories(messages)
+    #   memory_turn = len(messages) - 1 if ... else None
+    # 理由：不再需要注入记忆正文，MEMORY.md 索引已包含在 SYSTEM 中
+
+    # SYSTEM 提示中包含记忆索引
     system = build_system()
 
     while True:
-        # s09: save pre-compression snapshot for accurate memory extraction
-        pre_compress = [m if isinstance(m, dict) else {"role": m.get("role",""),
-            "content": str(m.get("content",""))} for m in messages]
+        # [改动 5] 删除 pre_compress 快照 — 不再需要事后抽取记忆
 
-        # s08: compression pipeline (budget → snip → micro)
+        # ── s08 三段压缩管道 ─────────────────────────────────
         messages[:] = tool_result_budget(messages)
         messages[:] = snip_compact(messages)
         messages[:] = micro_compact(messages)
@@ -603,32 +505,32 @@ def agent_loop(messages: list):
             messages[:] = compact_history(messages)
 
         try:
-            request_messages = messages
-            if memories_content and memory_turn is not None and memory_turn < len(messages):
-                request_messages = messages.copy()
-                request_messages[memory_turn] = {
-                    **messages[memory_turn],
-                    "content": memories_content + "\n\n" + messages[memory_turn]["content"],
-                }
+            # [改动 5] 删除 memories_content 拼接逻辑
+            # 不再需要 .copy() + 临时替换，直接发 messages
             response = client.messages.create(
-                model=MODEL, system=system, messages=request_messages, tools=TOOLS, max_tokens=8000
+                model=MODEL, system=system, messages=messages, tools=TOOLS, max_tokens=8000
             )
             reactive_retries = 0
         except Exception as e:
             if ("prompt_too_long" in str(e).lower() or "too many tokens" in str(e).lower()) and reactive_retries < MAX_REACTIVE_RETRIES:
                 print("[reactive compact]")
-                messages[:] = reactive_compact(messages)
+                # [改动 5] 简化：直接用 compact_history 代替 reactive_compact
+                # reactive_compact 与 compact_history 功能重叠，保留一个更简洁
+                write_transcript(messages)
+                summary = summarize_history(messages)
+                messages[:] = [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
                 reactive_retries += 1
                 continue
             raise
 
         messages.append({"role": "assistant", "content": response.content})
+
+        # [改动 5] 删除 extract_memories / consolidate_memories
+        # 记忆写入由模型通过 write_memory tool 自主完成
         if response.stop_reason != "tool_use":
-            # s09: extract from pre-compression snapshot for full fidelity
-            extract_memories(pre_compress)
-            consolidate_memories()
             return
 
+        # ── 分派 tool_use ────────────────────────────────────
         results = []
         for block in response.content:
             if block.type != "tool_use": continue
@@ -640,13 +542,19 @@ def agent_loop(messages: list):
         messages.append({"role": "user", "content": results})
 
 
+# ═══════════════════════════════════════════════════════════
+#  REPL 入口（与 s09_code.py 相同）
+# ═══════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
-    print("s09: Memory — persistent cross-session knowledge")
+    print("s09-cc: Memory — Tool-based writing (CC realistic mode)")
     print("输入问题，回车发送。输入 q 退出。\n")
     history = []
     while True:
-        try: query = input("\033[36ms09 >> \033[0m")
-        except (EOFError, KeyboardInterrupt): break
+        try:
+            query = input("\033[36ms09-cc >> \033[0m")
+        except (EOFError, KeyboardInterrupt):
+            break
         if query.strip().lower() in ("q", "exit", ""): break
         history.append({"role": "user", "content": query})
         agent_loop(history)

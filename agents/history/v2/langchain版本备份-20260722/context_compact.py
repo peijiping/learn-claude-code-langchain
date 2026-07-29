@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from llm_manage import LLMClient
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from tool_base import TRANSCRIPT_DIRNAME, TOOL_RESULTS_DIRNAME
 
@@ -143,7 +143,6 @@ class ContextCompact:
         self.summarizer = summarizer
         self.transcript_dir = Path(transcript_dir) if transcript_dir else Path.cwd() / TRANSCRIPT_DIRNAME
         self.tool_results_dir = Path(tool_results_dir) if tool_results_dir else Path.cwd() / TOOL_RESULTS_DIRNAME
-        self.llm_client = LLMClient().llm
 
     # ── 3a. 消息工具：content 归一化、类型判断、序列化 ──────────────
 
@@ -172,43 +171,38 @@ class ContextCompact:
         return str(msg)
 
     def is_ai_with_tool_use(self, msg) -> bool:
-        return isinstance(msg, dict) and msg["role"] == "assistant" and "tool_calls"
+        return isinstance(msg, AIMessage) and bool(getattr(msg, "tool_calls", None))
 
     def is_tool_result(self, msg) -> bool:
-        return isinstance(msg, dict) and msg["role"] == "tool"
-
-
-
-
+        return isinstance(msg, ToolMessage)
 
     def is_workspace_instruction(self, msg) -> bool:
         """判断 msg 是否为 SessionManager 启动时写入的 workspace 规则注入消息。"""
         return (
-            isinstance(msg, dict)
-            and msg["role"] == "user"
-            and isinstance(msg["content"], str)
+            isinstance(msg, HumanMessage)
+            and isinstance(msg.content, str)
             and (
-                "以下是 workspace/CLAUDE.md 内容：" in msg["content"]
-                or "以下是 workspace/AGENT.md 内容：" in msg["content"]
+                "以下是 workspace/CLAUDE.md 内容：" in msg.content
+                or "以下是 workspace/AGENT.md 内容：" in msg.content
             )
         )
 
     def message_to_dict(self, msg) -> dict:
         """把 LangChain 消息转成 dict 便于 jsonl 落盘。"""
-        if isinstance(msg, dict) and msg["role"] == "system":
-            return {"role": "system", "content": msg["content"]}
-        if isinstance(msg, dict) and msg["role"] == "user":
-            return {"role": "user", "content": msg["content"]}
-        if isinstance(msg, dict):
-            row = {"role": "assistant", "content": msg["content"]}
-            if "tool_calls" in msg:
-                row["tool_calls"] = msg["tool_calls"]
+        if isinstance(msg, SystemMessage):
+            return {"role": "system", "content": msg.content}
+        if isinstance(msg, HumanMessage):
+            return {"role": "human", "content": msg.content}
+        if isinstance(msg, AIMessage):
+            row = {"role": "ai", "content": msg.content}
+            if getattr(msg, "tool_calls", None):
+                row["tool_calls"] = msg.tool_calls
             if getattr(msg, "id", None):
                 row["id"] = msg.id
             return row
-        if isinstance(msg, dict) and msg["role"] == "tool":
-            return {"role": "tool", "content": msg["content"], "tool_call_id": msg["tool_call_id"]}
-        return {"role": "unknown", "content": str(msg["content"])}
+        if isinstance(msg, ToolMessage):
+            return {"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id}
+        return {"role": "unknown", "content": str(msg)}
 
     # ── 3b. Token 工具：解析、格式化、估算 ──────────────────────────
 
@@ -254,7 +248,7 @@ class ContextCompact:
             total += int(chinese * 1.5 + english * 1.3 + other * 0.5)
 
             if self.is_ai_with_tool_use(msg):
-                total += len(json.dumps(msg.get("tool_calls", []), ensure_ascii=False)) // 4
+                total += len(json.dumps(msg.tool_calls, ensure_ascii=False)) // 4
         return total
 
     # ── 3c. 上下文统计 ──────────────────────────────────────────────
@@ -398,13 +392,19 @@ class ContextCompact:
 
     def _format_message_for_summary(self, msg) -> str:
         """把单条消息格式化为 '[role]\\ncontent[\\ntool_calls/tool_call_id]' 形式。"""
-        role = msg["role"] if isinstance(msg, dict) and "role" in msg else "unknown"
+        type_to_role = {
+            SystemMessage: "system",
+            HumanMessage: "human",
+            AIMessage: "ai",
+            ToolMessage: "tool",
+        }
+        role = type_to_role.get(type(msg), getattr(msg, "type", msg.__class__.__name__))
         extra = ""
         if self.is_ai_with_tool_use(msg):
-            extra = "\ntool_calls: " + json.dumps(msg["tool_calls"], ensure_ascii=False)
+            extra = "\ntool_calls: " + json.dumps(msg.tool_calls, ensure_ascii=False)
         elif self.is_tool_result(msg):
-            extra = f"\ntool_call_id: {msg['tool_call_id']}"
-        return f"[{role}]\n{self.content_to_str(msg['content'])}{extra}"
+            extra = f"\ntool_call_id: {msg.tool_call_id}"
+        return f"[{role}]\n{self.content_to_str(msg.content)}{extra}"
 
     def _build_summary_prompt(self, messages: list) -> str:
         """构建摘要 prompt（9 段式结构化模板）。"""
@@ -421,16 +421,10 @@ class ContextCompact:
         chosen = summarizer or self.summarizer
         if chosen is not None:
             return chosen(prompt)
-        
-        response = self.llm_client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4000,
-            temperature=0.5,
-            reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
-            extra_body={"thinking":{"type":"disabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
-        )
+        from llm_manage import create_llm
 
-        return self.content_to_str(response.choices[0].message.content) or "(empty summary)"
+        response = create_llm(max_tokens=4000).invoke([HumanMessage(content=prompt)])
+        return self.content_to_str(response.content) or "(empty summary)"
 
     def write_transcript(self, messages: list, transcript_dir: Optional[Path] = None) -> Path:
         """把当前完整历史写到 .transcripts/transcript_<timestamp>.jsonl。"""
@@ -445,7 +439,7 @@ class ContextCompact:
 
     def _protected_prefix_end(self, messages: list) -> int:
         """返回受保护前缀的结束位置：SystemMessage + workspace 指令注入（不能进摘要）。"""
-        end = 1 if messages and messages[0].role == "system" else 0
+        end = 1 if messages and isinstance(messages[0], SystemMessage) else 0
         if len(messages) > end and self.is_workspace_instruction(messages[end]):
             end += 1
         return end
@@ -454,7 +448,7 @@ class ContextCompact:
         """从 before_index 往前找含指定 tool_call_id 的 AIMessage；遇到 HumanMessage 停止（跨轮无意义）。"""
         for i in range(before_index - 1, -1, -1):
             msg = messages[i]
-            if msg.role == "user":
+            if isinstance(msg, HumanMessage):
                 return None
             if self.is_ai_with_tool_use(msg) and any(tc.get("id") == tool_call_id for tc in msg.tool_calls):
                 return i
