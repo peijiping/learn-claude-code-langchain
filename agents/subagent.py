@@ -89,7 +89,7 @@ class SubAgent:
             str: 任务执行结果的摘要文本，如果无结果则返回 "(no summary)"
         """
         if allowed_tools is not None:
-            sub_tools = [t for t in self.base_tools if t["name"] in allowed_tools]
+            sub_tools = [t for t in self.base_tools if t.get("function").get("name") in allowed_tools]
         else:
             sub_tools = self.base_tools
 
@@ -160,17 +160,13 @@ class SubAgent:
                         "tool_call_id": tool_id,
                         "content": "Error: tool call missing name",
                     }
-                sub_messages.append(
-                    ToolMessage(
-                        content=json.dumps(result, ensure_ascii=False),
-                        tool_call_id=tool_id,
-                    )
-                )
+                sub_messages.append(result)
 
-            print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_response.tool_calls)} 个工具调用")
+            print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_msg.tool_calls)} 个工具调用")
 
         # 达到最大轮次，尝试从最后一轮响应中提取内容返回
-        content = self._extract_content(sub_response) if sub_response else ""
+        last_msg = sub_response.choices[0].message
+        content = self._extract_content(last_msg) if last_msg else ""
         if content:
             return f"[达到最大轮次限制，返回最后一轮摘要]\n{content}"
         return "(no summary: 达到最大轮次限制且最后一轮无内容)"

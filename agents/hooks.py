@@ -41,6 +41,8 @@ s04 将其重构为钩子,带来以下好处:
   • 可配置:不同实例可拥有不同的 deny_list / destructive 策略。
 """
 
+import json
+
 from tools import WORKDIR
 
 
@@ -165,7 +167,9 @@ class HookSystem:
         # 把字典里的关键字段拆出来,避免后面反复用 tool_call["name"] / tool_call["args"] 的写法,
         # 风格与 check_permission.py 的 LangChain 改造保持一致。
         tool_name = tool_call.function.name
-        tool_args = tool_call.function.arguments
+        # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能按 key 取值
+        raw_args = tool_call.function.arguments
+        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
 
                # ── 规则 1:bash 命令的硬黑名单 + 软危险检查 ──────────────────────
         if tool_name == "bash":
@@ -213,7 +217,9 @@ class HookSystem:
         """
         # 拆出常用字段,保持与 permission_hook 一致的 LangChain 风格写法。
         tool_name = tool_call.function.name
-        tool_args = tool_call.function.arguments
+        # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能按 key 取值
+        raw_args = tool_call.function.arguments
+        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
         # 取 args 字典的前两个值,转为字符串后截断至 60 字符,
         # 避免长参数 (如大段代码、巨型文件) 把终端刷屏。
         args_preview = str(list(tool_args)[:2])[:60]

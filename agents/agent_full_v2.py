@@ -198,18 +198,17 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         for tc in response_tool_calls:
             # 找到对应 tool_call_id 的执行结果
             result = next(
-                (r for r in tool_call_results if r.get("tool_call_id") == tc["id"]),
+                (r for r in tool_call_results if r.get("tool_call_id") == tc.id),
                 None,
             )
             if result is None:
                 tool_content = json.dumps(
-                    {"error": f"No result found for tool_call_id {tc['id']}"},
+                    {"error": f"No result found for tool_call_id {tc.id}"},
                     ensure_ascii=False,
                 )
             else:
                 tool_content = json.dumps(result, ensure_ascii=False)
-            # tool_msg = ToolMessage(content=tool_content, tool_call_id=tc["id"])
-            tool_msg = {"role": "tool", "content": tool_content,"tool_call_id":tc["id"]}
+            tool_msg = {"role": "tool", "content": tool_content,"tool_call_id":tc.id}
             history_messages.append(tool_msg)
             session_manager.append_message_to_session(session_file, tool_msg)
 
@@ -281,11 +280,10 @@ def main():
         session_manager.maybe_compact_context(history_messages, session_file)
         # 执行智能体主循环
         agent_loop(history_messages, session_file, session_manager)
-        response_content = history_messages[-1].content
+        response_content = history_messages[-1].get("content", "")
         if isinstance(response_content, list):
             for block in response_content:
-                if hasattr(block, "text"):
-                    print(block.text)
+                print(block.get("text", ""))
         else:
             print(response_content)
         print()

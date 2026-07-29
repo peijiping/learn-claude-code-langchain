@@ -254,7 +254,7 @@ class ContextCompact:
             total += int(chinese * 1.5 + english * 1.3 + other * 0.5)
 
             if self.is_ai_with_tool_use(msg):
-                total += len(json.dumps(msg.tool_calls, ensure_ascii=False)) // 4
+                total += len(json.dumps(msg.get("tool_calls", []), ensure_ascii=False)) // 4
         return total
 
     # ── 3c. 上下文统计 ──────────────────────────────────────────────
