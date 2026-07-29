@@ -164,10 +164,10 @@ class HookSystem:
         """
         # 把字典里的关键字段拆出来,避免后面反复用 tool_call["name"] / tool_call["args"] 的写法,
         # 风格与 check_permission.py 的 LangChain 改造保持一致。
-        tool_name = tool_call["function"]["name"]
-        tool_args = tool_call["function"]["args"]
+        tool_name = tool_call.function.name
+        tool_args = tool_call.function.arguments
 
-        # ── 规则 1:bash 命令的硬黑名单 + 软危险检查 ──────────────────────
+               # ── 规则 1:bash 命令的硬黑名单 + 软危险检查 ──────────────────────
         if tool_name == "bash":
             # 1a) 硬黑名单:出现即拒绝,无需交互
             for pattern in self.deny_list:
@@ -212,15 +212,15 @@ class HookSystem:
             None (本钩子只做观察,从不阻断)。
         """
         # 拆出常用字段,保持与 permission_hook 一致的 LangChain 风格写法。
-        tool_name = tool_call["function"]["name"]
-        tool_args = tool_call["function"]["args"]
+        tool_name = tool_call.function.name
+        tool_args = tool_call.function.arguments
         # 取 args 字典的前两个值,转为字符串后截断至 60 字符,
         # 避免长参数 (如大段代码、巨型文件) 把终端刷屏。
-        args_preview = str(list(tool_args.values())[:2])[:60]
+        args_preview = str(list(tool_args)[:2])[:60]
         print(f"\033[90m[HOOK] {tool_name}({args_preview})\033[0m")
         return None
 
-    def large_output_hook(self, tool_call: dict, output):
+    def large_output_hook(self, tool_call: dict, output: str):
         """
         PostToolUse 钩子 —— 大输出告警。
 

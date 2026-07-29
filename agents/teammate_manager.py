@@ -18,13 +18,13 @@ teammate_manager.py - 团队成员管理模块
 - 收件箱（Inbox）：基于 JSONL 文件的消息队列，仅追加写入，读取后清空
 - 消息类型：支持 5 种预定义消息类型，用于不同通信场景
 """
-
+import os
 import json
 from message_bus import MessageBus,VALID_MSG_TYPES
 
 import threading
 from pathlib import Path
-from llm_manage import create_llm_with_tools
+from llm_manage import LLMClient
 from tool_base import (
     safe_path,
     run_read,run_read_pdf, run_write, run_edit,run_glob,
@@ -64,6 +64,10 @@ class TeammateManager:
         # 初始化消息总线
         # 每个团队成员拥有独立的 JSONL 收件箱文件（./inbox/{name}.jsonl）
         self.bus = MessageBus(INBOX_DIR)
+        # 初始化 LLM 客户端
+        self.llm_client = LLMClient().llm
+
+        self.model = os.environ.get("OPENAI_MODEL_ID", "")
 
 
     def _load_config(self) -> dict:
@@ -222,26 +226,37 @@ class TeammateManager:
 
             try:
                 # 步骤2：调用 LLM 进行推理
-                response = llm_with_tools.invoke(messages)
+                response = self.llm_client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=tools,
+                    stream=False, #是否流式输出，默认 False
+                    max_tokens=4000,
+                    temperature=0.5,
+                    reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
+                    extra_body={"thinking":{"type":"disabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
+                )
             except Exception:
                 # LLM 调用失败，退出循环
                 break
 
             # 将 LLM 响应添加到消息历史
-            messages.append({"role": "assistant", "content": response.content})
+            reponse_msg = response.choices[0].message
+            messages.append(reponse_msg.model_dump())
 
             # 步骤3：如果 LLM 停止原因是工具调用，则执行工具
-            if not hasattr(response, "tool_calls") or not response.tool_calls:
+            if not hasattr(reponse_msg, "tool_calls") or not reponse_msg.tool_calls:
                 # LLM 选择不调用工具，对话结束
                 break
 
             # 步骤4：执行所有工具调用
-            results = []
             has_meaningful_output = False  # 标记是否有意义的输出
-            for tool_call in response.tool_calls:
-                tool_name = tool_call["name"]
-                tool_args = tool_call["args"]
-                tool_id = tool_call["id"]
+            for tool_call in reponse_msg.tool_calls:
+                tool_name = tool_call.function.name
+                # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能按 key 取值
+                raw_args = tool_call.function.arguments
+                tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                tool_id = tool_call.id
                 output = self._exec(name, tool_name, tool_args)
                 print(f"  [{name}] {tool_name}: {str(output)[:120]}")
 
@@ -249,15 +264,12 @@ class TeammateManager:
                 output_str = str(output).strip()
                 if output_str and not output_str.startswith("Error:") and output_str not in ("()", "[]", "None"):
                     has_meaningful_output = True
-
-                results.append({
-                    "type": "tool_result",
+                # 将工具执行结果添加到消息历史
+                messages.append({
+                    "role": "tool",
                     "tool_call_id": tool_id,
                     "content": str(output),
                 })
-
-            # 将工具执行结果作为用户消息添加回对话
-            messages.append({"role": "user", "content": json.dumps(results)})
 
             # 如果连续空收件箱但有有意义的输出，重置计数器
             if consecutive_empty_count > 0 and has_meaningful_output:

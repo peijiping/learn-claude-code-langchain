@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from agents.history.v1.llm_manage import llm
 from llm_manage import LLMClient
 
 from tool_base import TRANSCRIPT_DIRNAME, TOOL_RESULTS_DIRNAME

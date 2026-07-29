@@ -45,6 +45,8 @@ except ImportError:
 # 加载环境变量
 load_dotenv(override=True)
 
+MODEL = os.environ.get("OPENAI_MODEL_ID", "")
+
 
 # 系统prompt
 SYSTEM = build_system_prompt()
@@ -66,7 +68,9 @@ MAX_AGENT_ITERATIONS = 100
 def _execute_tool_call(tool_call: dict) -> dict:
     """执行单个工具调用（sub_agent 或普通工具），返回结果字典"""
     tool_name = tool_call.function.name
-    tool_args = tool_call.function.arguments
+    # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能 ** 解包
+    raw_args = tool_call.function.arguments
+    tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
     tool_id = tool_call.id
 
 
@@ -121,27 +125,32 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
 
         #调用大模型执行当前轮次的回复
         llm_response = llm_client.chat.completions.create(
+            model=MODEL,
             messages=history_messages,
             tools=MAIN_AGENT_TOOLS,
             tool_choice="auto", #工具选择，值域 none、auto、required，默认 auto
             parallel_tool_calls=True, #是否并行执行工具调用，默认 False
+            stream=False, #是否流式输出，默认 False
             temperature=0.5,
             reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
             extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
         )
         # 从大模型回复中提取消息
         response_msg = llm_response.choices[0].message
-        
+        # 提取大模型回复中的工具调用
+        response_tool_calls = response_msg.tool_calls or []
         #打印大模型的思考和回复内容
         print(f"[本轮思考] {response_msg.reasoning_content}")
         print(f"[本轮回复] {response_msg.content}")
         
+        # 将 Pydantic 模型转换为 dict，保留 role/content/reasoning_content/tool_calls 等字段
+        response_msg_dict = response_msg.model_dump()
         # 加入大模型回复到历史消息中
-        history_messages.append(response_msg)
-        session_manager.append_message_to_session(session_file, response_msg)
+        history_messages.append(response_msg_dict)
+        session_manager.append_message_to_session(session_file, response_msg_dict)
         
 
-        if response_msg.tool_calls:
+        if len(response_tool_calls) == 0:
             #增加一个hook，用于在大模型回复中检查是否需要强制结束当前轮次
             force = hook_system.trigger("Stop", history_messages)
             if force:
@@ -150,22 +159,23 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
                 continue
             return
 
-        print(f"》》》》》》》》[本轮 tool_calls 数量] {len(response_msg.tool_calls)}")
-        print(response_msg.tool_calls)
+        
+        print(f"》》》》》》》》[本轮 tool_calls 数量] {len(response_tool_calls)}")
+        print(response_tool_calls)
         print("*********")
         # 所有工具调用都根据 parallel 参数分组，并行组用线程池执行，串行组按顺序执行
         tool_call_results = []
         used_todo = False
         # 目前先在循环中串行执行所有工具调用，大模型返回工具根据任务需要会一次返回多个或一个工具
-        for tool_call in response_msg.tool_calls:
-            if tool_call.g["function"]["name"] == "todo":
+        for tool_call in response_tool_calls:
+            if tool_call.function.name == "todo":
                 used_todo = True
             
             # s04 change: hook，用钩子增加工具权限校验和日志记录，若不符合权限则阻塞执行
             blocked = hook_system.trigger("PreToolUse", tool_call)
             if blocked:
                 #往消息中记录工具调用被阻塞的原因
-                tool_call_results.append({"role": "tool", "tool_call_id": tool_call["id"],
+                tool_call_results.append({"role": "tool", "tool_call_id": tool_call.id,
                                 "content": str(blocked)})
                 continue
             
@@ -185,7 +195,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
 
         print("》》》》》》》》")
         # 加入工具执行结果到历史消息中（必须为 ToolMessage，否则 OpenAI 会报 400）
-        for tc in response_msg.tool_calls:
+        for tc in response_tool_calls:
             # 找到对应 tool_call_id 的执行结果
             result = next(
                 (r for r in tool_call_results if r.get("tool_call_id") == tc["id"]),

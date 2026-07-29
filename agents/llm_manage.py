@@ -20,22 +20,21 @@ class LLMClient:
         # 加载环境变量
         load_dotenv(override=True)
 
-        self.model = os.environ.get("OPENAI_MODEL_ID", "")
+        
         self.api_key = os.environ.get("OPENAI_API_KEY", "")
         self.base_url = os.environ.get("OPENAI_BASE_URL", "")
         self.timeout: int = 1200
         self.max_retries: int = 3
 
         # 检查是否配置了模型参数
-        if not self.model or not self.api_key or not self.base_url:
-            raise ValueError("请配置 OPENAI_MODEL_ID、OPENAI_API_KEY、OPENAI_BASE_URL 环境变量")
+        if  not self.api_key or not self.base_url:
+            raise ValueError("请配置 OPENAI_API_KEY、OPENAI_BASE_URL 环境变量")
 
         # 初始化大模型实例
         self.llm = self.create_llm()
 
     def create_llm(
         self,
-        model: str = None,
         api_key: str = None,
         base_url: str = None,
         timeout: int = None,

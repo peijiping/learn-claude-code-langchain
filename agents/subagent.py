@@ -6,7 +6,7 @@ subagent.py - 通用型子智能体模块
 子智能体默认拥有全部工具权限，通过 prompt 引导行为，而非通过类型限制。
 支持通过 system_prompt 和 allowed_tools 参数自定义子智能体的能力和角色。
 """
-
+import os
 import json
 
 from tools import WORKDIR
@@ -51,6 +51,7 @@ class SubAgent:
             hook_system.register_default_hooks()
         self.hook_system = hook_system
         self.sub_llm_client = LLMClient().llm
+        self.model = os.environ.get("OPENAI_MODEL_ID", "")
 
     @staticmethod
     def _extract_content(response) -> str:
@@ -104,10 +105,11 @@ class SubAgent:
         for iteration in range(self.MAX_ITERATIONS):
             try:
                 sub_response = self.sub_llm_client.chat.completions.create(
+                    model=self.model,
                     messages=sub_messages,
                     tools=sub_tools,
-                    tool_choice="auto", #工具选择，值域 none、auto、required，默认 auto
-                    parallel_tool_calls=True, #是否并行执行工具调用，默认 False
+                    stream=False, #是否流式输出，默认 False
+                    max_tokens=4000,
                     temperature=0.5,
                     reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
                     extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
@@ -117,19 +119,20 @@ class SubAgent:
                 print(f"  [subagent] {error_msg}")
                 return error_msg
             sub_msg = sub_response.choices[0].message
-            sub_messages.append(sub_msg)
+            sub_messages.append(sub_msg.model_dump())
 
             if not hasattr(sub_msg, "tool_calls") or not sub_msg.tool_calls:
-                content = self._extract_content(sub_msg)
+                content = self._extract_content(sub_msg.model_dump())
                 return content or "(no summary)"
 
             for tool_call in sub_msg.tool_calls:
-                tool_id = tool_call["id"]
-                tool_name = tool_call["function"]["name"]
-                tool_args = tool_call["function"]["arguments"]
-                
+                tool_id = tool_call.id
+                tool_name = tool_call.function.name
+                # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能 ** 解包
+                raw_args = tool_call.function.arguments
+                tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
 
-                if tool_call["name"]:
+                if tool_name:
                     # hooks: PreToolUse
                     blocked = self.hook_system.trigger("PreToolUse", tool_call)
                     if blocked:

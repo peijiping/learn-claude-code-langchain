@@ -86,6 +86,13 @@ class SessionManager:
         """
         从jsonl文件加载对话历史
 
+        容错策略：
+        - 正常情况：每行一个 JSON，按行解析。
+        - 异常情况（曾因进程中断导致两个 JSON 拼在同一行）：
+          用 raw_decode 把一行内的多个 JSON 全部解出来，跳过空白再继续。
+        加载成功后，如果发现存在拼行的情况，会以正确格式重写整个文件，
+        避免下次启动再次触发同一错误。
+
         Args:
             session_file: 会话文件路径
 
@@ -96,41 +103,59 @@ class SessionManager:
         if not session_file.exists():
             return messages
 
+        repaired = False  # 是否检测到拼行/坏行
         try:
             with open(session_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    msg_data = json.loads(line)
-                    msg_role = msg_data.get("role")
-                    content = msg_data.get("content", "")
+                content = f.read()
 
-                    if msg_role == "system":
-                        # messages.append(SystemMessage(content=content))
-                        messages.append({"role": "system", "content": content})
-                    elif msg_role == "human":
-                        messages.append({"role": "user", "content": content})
-                    elif msg_role == "assistant":
-                        # ai_msg = AIMessage(
-                        #     content=content,
-                        #     additional_kwargs=msg_data.get("additional_kwargs", {}),
-                        #     response_metadata=msg_data.get("response_metadata", {}),
-                        #     id=msg_data.get("id"),
-                        #     name=msg_data.get("name"),
-                        #     tool_calls=msg_data.get("tool_calls", []),
-                        #     invalid_tool_calls=msg_data.get("invalid_tool_calls", []),
-                        #     usage_metadata=msg_data.get("usage_metadata"),
-                        # )
-                        messages.append({"role": "assistant", "content": content, "reasoning_content": msg_data.get("reasoning_content", ""), "tool_calls": msg_data.get("tool_calls", [])})
-                    elif msg_role == "tool":
-                        # messages.append(ToolMessage(
-                        #     content=content,
-                        #     tool_call_id=msg_data.get("tool_call_id", "")
-                        # ))
-                        messages.append({"role": "tool", "content": content, "tool_call_id": msg_data.get("tool_call_id", "")})
+            decoder = json.JSONDecoder()
+            idx = 0
+            n = len(content)
+            while idx < n:
+                # 跳过行间空白字符
+                while idx < n and content[idx] in " \t\r\n":
+                    idx += 1
+                if idx >= n:
+                    break
+                obj, end = decoder.raw_decode(content, idx)
+                # 解析成功后到 end 之间是否还有非空白字符？
+                # 有 → 说明原本应当换行（拼行）；记录以便事后重写。
+                tail_has_non_ws = any(c not in " \t\r\n" for c in content[idx:end])
+                if tail_has_non_ws and end > idx:
+                    repaired = True
+                messages.append(obj)
+                idx = end
         except Exception as e:
             print(f"加载会话历史失败: {e}")
+
+        # 把 dict 形式的 row 转成 load_session_history 期望的消息结构
+        normalized = []
+        for msg_data in messages:
+            if not isinstance(msg_data, dict):
+                continue
+            msg_role = msg_data.get("role")
+            content = msg_data.get("content", "")
+            if msg_role == "system":
+                normalized.append({"role": "system", "content": content})
+            elif msg_role == "user":
+                normalized.append({"role": "user", "content": content})
+            elif msg_role == "assistant":
+                normalized.append({
+                    "role": "assistant",
+                    "content": content,
+                    "reasoning_content": msg_data.get("reasoning_content", ""),
+                    "tool_calls": msg_data.get("tool_calls", []),
+                })
+            elif msg_role == "tool":
+                normalized.append({
+                    "role": "tool",
+                    "content": content,
+                    "tool_call_id": msg_data.get("tool_call_id", ""),
+                })
+            else:
+                # 兜底：未知 role 仍按 user 处理，避免丢消息
+                normalized.append({"role": "user", "content": str(content)})
+        messages = normalized
 
         # 修复旧数据：ai(tool_calls) 后面若跟的是 human 消息（旧格式脏数据），
         # 则将其转换为 ToolMessage，避免 OpenAI 报 400
@@ -140,6 +165,14 @@ class SessionManager:
         # 崩溃 / 被中断，导致 tool_calls 没有匹配的 tool 响应。重新加载整段历史
         # 直接回传 OpenAI 会触发 400 invalid_request_error。
         messages = self._sanitize_orphan_tool_calls(messages)
+
+        # 自愈：发现拼行/坏行时，重写文件为标准 JSONL
+        if repaired and messages:
+            try:
+                self.save_session_history(session_file, messages)
+                print("\033[33m[会话修复] 检测到历史文件存在拼行，已自动重写为标准 JSONL\033[0m")
+            except Exception as e:
+                print(f"\033[33m[会话修复] 重写历史文件失败: {e}\033[0m")
 
         return messages
 
@@ -386,7 +419,7 @@ class SessionManager:
         after_text = f"{after.used_tokens}/{after.max_label} tokens，剩余 {int(after.remaining_percent)}%" if after else "未知"
         print(f"\033[33m[上下文压缩完成] {summary}；压缩后 {after_text}\033[0m")
 
-    def _build_workspace_instruction_message(self) -> Dict[str, str]:
+    def _build_workspace_instruction_message(self) -> dict:
         """
         读取 workspace 根目录下的指令文件，并构造为一条 HumanMessage。
 
