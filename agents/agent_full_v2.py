@@ -194,7 +194,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             tool_call_results.insert(0, {"type": "text", "text": "<reminder>Update your tasks.</reminder>"})
 
         print("》》》》》》》》")
-        # 加入工具执行结果到历史消息中（必须为 ToolMessage，否则 OpenAI 会报 400）
+        # 加入工具执行结果到历史消息中
         for tc in response_tool_calls:
             # 找到对应 tool_call_id 的执行结果
             result = next(
@@ -206,9 +206,19 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
                     {"error": f"No result found for tool_call_id {tc.id}"},
                     ensure_ascii=False,
                 )
+            elif isinstance(result, dict):
+                # tool message 的 content 字段就是工具输出字符串本身
+                # result 里多带的 role/tool_name/tool_args/tool_call_id 是给 hook 用的元数据,
+                # 不应再被 json.dumps 二次序列化进 content (会导致 session jsonl 双层嵌套)
+                # 同时确保 content 一定是 string (OpenAI tool message 规范),
+                # 如果 handler 偷懒返回了 dict, 兜底再 json.dumps 一次
+                inner = result.get("content", "")
+                tool_content = inner if isinstance(inner, str) else json.dumps(inner, ensure_ascii=False)
             else:
-                tool_content = json.dumps(result, ensure_ascii=False)
-            tool_msg = {"role": "tool", "content": tool_content,"tool_call_id":tc.id}
+                # 防御性兜底: 当前 _execute_tool_call 总是返回 dict, 此分支理论上不可达
+                # str() 不会产生 JSON 嵌套, 安全
+                tool_content = str(result)
+            tool_msg = {"role": "tool", "content": tool_content, "tool_call_id": tc.id}
             history_messages.append(tool_msg)
             session_manager.append_message_to_session(session_file, tool_msg)
 

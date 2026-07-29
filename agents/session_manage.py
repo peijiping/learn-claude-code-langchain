@@ -118,13 +118,16 @@ class SessionManager:
                 if idx >= n:
                     break
                 obj, end = decoder.raw_decode(content, idx)
-                # 解析成功后到 end 之间是否还有非空白字符？
-                # 有 → 说明原本应当换行（拼行）；记录以便事后重写。
-                tail_has_non_ws = any(c not in " \t\r\n" for c in content[idx:end])
-                if tail_has_non_ws and end > idx:
+                # 检查到下一个非空白字符之间是否缺少换行/空白（拼行）：
+                # 从 end 开始跳空白，若一步都没跳（next_idx == end），
+                # 且文件还没读完，说明上一个 JSON 紧贴下一个 JSON。
+                next_idx = end
+                while next_idx < n and content[next_idx] in " \t\r\n":
+                    next_idx += 1
+                if next_idx == end and next_idx < n:
                     repaired = True
                 messages.append(obj)
-                idx = end
+                idx = next_idx
         except Exception as e:
             print(f"加载会话历史失败: {e}")
 
