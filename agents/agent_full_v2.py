@@ -23,7 +23,7 @@ from tools import (
 )
 from skills import SkillLoader
 from llm_manage import LLMClient
-from system_prompt import build_system_prompt
+from system_prompt import SystemPromptBuilder
 # from check_permission import check_permission
 from hooks import HookSystem
 
@@ -49,7 +49,7 @@ MODEL = os.environ.get("OPENAI_MODEL_ID", "")
 
 
 # 系统prompt
-SYSTEM = build_system_prompt()
+SYSTEM = SystemPromptBuilder()
 # 创建绑定了工具的 LLM 实例
 llm_client = LLMClient().llm
 
@@ -224,7 +224,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
 
 
 def main():
-    session_manager = SessionManager(CHAT_HISTORY_DIR, SYSTEM)
+    session_manager = SessionManager(CHAT_HISTORY_DIR, SYSTEM.build_system_prompt())
     session_num, session_file, history_messages = session_manager.init_session()
     
     while True:
