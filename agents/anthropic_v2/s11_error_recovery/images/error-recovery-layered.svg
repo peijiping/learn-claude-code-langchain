@@ -1,0 +1,312 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1220" font-family="system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1e3a5f"/><stop offset="100%" stop-color="#dc2626"/>
+    </linearGradient>
+    <linearGradient id="L0bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f1f5f9"/><stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <linearGradient id="L1bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#eff6ff"/><stop offset="100%" stop-color="#dbeafe"/>
+    </linearGradient>
+    <linearGradient id="L2bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff7ed"/><stop offset="100%" stop-color="#fed7aa"/>
+    </linearGradient>
+    <linearGradient id="L3bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef2f2"/><stop offset="100%" stop-color="#fecaca"/>
+    </linearGradient>
+    <linearGradient id="try1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fefce8"/><stop offset="100%" stop-color="#fef9c3"/>
+    </linearGradient>
+
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea580c"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16a34a"/>
+    </marker>
+  </defs>
+
+  <rect width="1500" height="1220" fill="#fafbfc"/>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1500" height="50" fill="url(#header)"/>
+  <text x="750" y="32" fill="#fff" font-size="18" font-weight="700" text-anchor="middle">s11 Error Recovery — 错误处理分层流程图（外层 try/except ⇄ 内层 with_retry）</text>
+
+  <!-- Legend -->
+  <g font-size="11" fill="#334155">
+    <line x1="30" y1="68" x2="70" y2="68" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+    <text x="78" y="72">正常流程</text>
+
+    <line x1="170" y1="68" x2="210" y2="68" stroke="#ea580c" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ao)"/>
+    <text x="218" y="72" fill="#ea580c" font-weight="600">continue（回到 while 顶部）</text>
+
+    <line x1="420" y1="68" x2="460" y2="68" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+    <text x="468" y="72" fill="#dc2626" font-weight="600">raise（向上抛给外层）</text>
+
+    <line x1="680" y1="68" x2="720" y2="68" stroke="#16a34a" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ag)"/>
+    <text x="728" y="72" fill="#16a34a" font-weight="600">恢复成功 / 正常返回</text>
+
+    <rect x="900" y="60" width="14" height="10" rx="2" fill="#fef3c7" stroke="#d97706"/>
+    <text x="920" y="72" fill="#d97706" font-weight="600">try 块</text>
+    <rect x="990" y="60" width="14" height="10" rx="2" fill="#fecaca" stroke="#dc2626"/>
+    <text x="1010" y="72" fill="#dc2626" font-weight="600">except 块</text>
+    <rect x="1110" y="60" width="14" height="10" rx="2" fill="#dcfce7" stroke="#16a34a"/>
+    <text x="1130" y="72" fill="#16a34a" font-weight="600">成功路径</text>
+  </g>
+
+  <!-- ============== Layer 0 ============== -->
+  <rect x="30" y="90" width="1440" height="64" rx="10" fill="url(#L0bg)" stroke="#64748b" stroke-width="2"/>
+  <text x="50" y="112" fill="#1e293b" font-size="14" font-weight="700">Layer 0 · Main REPL 循环（__main__）</text>
+  <text x="50" y="131" fill="#334155" font-size="11">while True: 读输入 → history.append(user) → 调用 agent_loop(history, context) → 打印结果</text>
+  <text x="50" y="146" fill="#64748b" font-size="10" font-style="italic">说明：这一层完全不知道错误存在，所有异常都在 agent_loop 内部被吞掉</text>
+
+  <line x1="200" y1="154" x2="200" y2="180" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <text x="210" y="170" fill="#475569" font-size="11" font-weight="600">调用 agent_loop(messages, context)</text>
+
+  <!-- ============== Layer 1: agent_loop outer ============== -->
+  <rect x="30" y="184" width="1440" height="990" rx="12" fill="url(#L1bg)" stroke="#2563eb" stroke-width="2.5"/>
+  <text x="50" y="208" fill="#1e3a5f" font-size="14" font-weight="700">Layer 1 · agent_loop() —— 外层 try/except</text>
+  <text x="50" y="225" fill="#475569" font-size="11">职责：① 初始化  ② 包装内层调用  ③ 判 stop_reason（Path 1）  ④ 兜底未处理异常（Path 2 + 其他）</text>
+
+  <!-- Init -->
+  <rect x="60" y="240" width="280" height="46" rx="6" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="200" y="260" fill="#1e3a5f" font-size="11" font-weight="700" text-anchor="middle">① 初始化</text>
+  <text x="200" y="274" fill="#475569" font-size="10" text-anchor="middle">system = get_system_prompt(context)</text>
+  <text x="200" y="286" fill="#475569" font-size="10" text-anchor="middle">state = RecoveryState()  ·  max_tokens = 8000</text>
+
+  <line x1="200" y1="286" x2="200" y2="308" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- while True -->
+  <rect x="60" y="310" width="280" height="40" rx="6" fill="#bfdbfe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="200" y="334" fill="#1e3a5f" font-size="12" font-weight="700" text-anchor="middle">② while True: 主循环</text>
+
+  <!-- Continue-back loops: from various recovery sites, they all return to ② -->
+  <!-- Vertical "main artery" column on the left at x=200, between y=308 and y=850 -->
+  <line x1="200" y1="350" x2="200" y2="386" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- ============== Outer try block container ============== -->
+  <rect x="40" y="388" width="600" height="780" rx="10" fill="url(#try1)" stroke="#d97706" stroke-width="2.5" stroke-dasharray="2 0"/>
+  <text x="60" y="410" fill="#92400e" font-size="13" font-weight="700">③ try:  ← 外层 try 块（黄底）</text>
+  <text x="60" y="425" fill="#b45309" font-size="10" font-style="italic">本块只做一件事：把 LLM 调用转交给 with_retry（Layer 2）</text>
+
+  <!-- Call to with_retry (entering Layer 2) -->
+  <rect x="100" y="438" width="480" height="44" rx="6" fill="#fff" stroke="#d97706" stroke-width="2"/>
+  <text x="340" y="458" fill="#92400e" font-size="11" font-weight="700" text-anchor="middle">response = with_retry(lambda: client.messages.create(...), state)</text>
+  <text x="340" y="473" fill="#b45309" font-size="9" text-anchor="middle">lambda 闭包 → 延迟绑定 max_tokens / current_model（循环里会变）</text>
+
+  <line x1="340" y1="482" x2="340" y2="500" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <text x="350" y="494" fill="#475569" font-size="10" font-weight="600">→ 进入 Layer 2</text>
+
+  <!-- ============== Layer 2: with_retry ============== -->
+  <rect x="70" y="500" width="540" height="380" rx="8" fill="url(#L2bg)" stroke="#ea580c" stroke-width="2.5"/>
+  <text x="90" y="522" fill="#9a3412" font-size="13" font-weight="700">Layer 2 · with_retry(fn, state) —— 内层 for 循环（橙底）</text>
+  <text x="90" y="538" fill="#c2410c" font-size="10" font-style="italic">职责：只处理"等一下重试就能好"的错误（429/529）。其他错误一律 raise 给外层。</text>
+
+  <!-- Inner try -->
+  <rect x="90" y="552" width="300" height="50" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="240" y="573" fill="#92400e" font-size="11" font-weight="700" text-anchor="middle">内层 try: result = fn()</text>
+  <text x="240" y="588" fill="#b45309" font-size="9" text-anchor="middle">成功 → state.consecutive_529 = 0 → return result</text>
+
+  <!-- Layer 3 (LLM call) -->
+  <line x1="240" y1="602" x2="240" y2="624" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="140" y="624" width="200" height="36" rx="6" fill="url(#L3bg)" stroke="#dc2626" stroke-width="2"/>
+  <text x="240" y="647" fill="#7f1d1d" font-size="11" font-weight="700" text-anchor="middle">Layer 3 · client.messages.create()</text>
+
+  <!-- Success return arrow: L3 → L2 inner try (right side) -->
+  <path d="M 340 642 L 380 642 L 380 577 L 390 577" fill="none" stroke="#16a34a" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ag)"/>
+  <text x="345" y="635" fill="#16a34a" font-size="9" font-weight="600">response</text>
+
+  <!-- Inner except branches (right side of Layer 2) -->
+  <line x1="390" y1="577" x2="420" y2="577" stroke="#dc2626" stroke-width="2" stroke-dasharray="3 2" marker-end="url(#ar)"/>
+  <text x="395" y="570" fill="#dc2626" font-size="9" font-weight="600">except</text>
+
+  <!-- 429 -->
+  <rect x="420" y="552" width="170" height="50" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="505" y="572" fill="#7f1d1d" font-size="10" font-weight="700" text-anchor="middle">except 429 RateLimit</text>
+  <text x="505" y="585" fill="#991b1b" font-size="9" text-anchor="middle">→ 退避后重试同请求</text>
+  <text x="505" y="596" fill="#7c3aed" font-size="9" text-anchor="middle">consecutive_529 不变</text>
+
+  <!-- 529 -->
+  <rect x="420" y="608" width="170" height="50" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="505" y="628" fill="#7f1d1d" font-size="10" font-weight="700" text-anchor="middle">except 529 Overloaded</text>
+  <text x="505" y="641" fill="#991b1b" font-size="9" text-anchor="middle">→ 退避后重试</text>
+  <text x="505" y="652" fill="#7c3aed" font-size="9" text-anchor="middle">consecutive_529 += 1</text>
+
+  <!-- Other -->
+  <rect x="420" y="664" width="170" height="60" rx="6" fill="#fecaca" stroke="#dc2626" stroke-width="2"/>
+  <text x="505" y="684" fill="#7f1d1d" font-size="10" font-weight="700" text-anchor="middle">except 其他</text>
+  <text x="505" y="697" fill="#991b1b" font-size="9" text-anchor="middle">prompt_too_long</text>
+  <text x="505" y="708" fill="#991b1b" font-size="9" text-anchor="middle">auth / param / 未知</text>
+  <text x="505" y="719" fill="#dc2626" font-size="9" font-weight="700" text-anchor="middle">→ raise 抛给外层</text>
+
+  <!-- 10 retries exhausted (raise RuntimeError) -->
+  <rect x="420" y="730" width="170" height="40" rx="6" fill="#fecaca" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="505" y="750" fill="#7f1d1d" font-size="9" font-weight="700" text-anchor="middle">10 次都用完</text>
+  <text x="505" y="762" fill="#991b1b" font-size="9" text-anchor="middle">→ raise RuntimeError</text>
+
+  <!-- Back-to-top arrows for 429/529: continue to for 顶部 (top of inner try) -->
+  <path d="M 420 575 L 80 575 L 80 580 L 90 580" fill="none" stroke="#ea580c" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ao)"/>
+  <text x="195" y="567" fill="#ea580c" font-size="9" font-weight="600">continue → for 顶部，再调一次 fn()（同请求）</text>
+
+  <path d="M 420 630 L 75 630 L 75 580 L 90 580" fill="none" stroke="#ea580c" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ao)"/>
+  <text x="195" y="622" fill="#ea580c" font-size="9" font-weight="600">continue → for 顶部，current_model 可能已变</text>
+
+  <!-- raise arrow: 其他 → outer except (goes to the right out of Layer 2, then up to L1 except 兜底) -->
+  <line x1="590" y1="694" x2="640" y2="694" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 3"/>
+  <line x1="640" y1="694" x2="640" y2="1080" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="650" y="850" fill="#dc2626" font-size="11" font-weight="700">↑ raise（其他）</text>
+  <text x="650" y="865" fill="#dc2626" font-size="10">向上抛到 Layer 1 的 except</text>
+
+  <!-- raise from "10 exhausted" → outer 兜底 -->
+  <line x1="590" y1="750" x2="640" y2="750" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 3"/>
+
+  <!-- Success return: from L2 to L1 (after inner try succeeded) -->
+  <line x1="240" y1="660" x2="240" y2="700" stroke="#16a34a" stroke-width="2" marker-end="url(#ag)"/>
+  <rect x="100" y="700" width="280" height="40" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="240" y="718" fill="#14532d" font-size="11" font-weight="700" text-anchor="middle">return result → 回到 Layer 1</text>
+  <text x="240" y="731" fill="#166534" font-size="9" text-anchor="middle">（内层自己处理好了，外层 try 正常往下走）</text>
+
+  <!-- ⑩ append response / ⑨ check stop_reason -->
+  <line x1="240" y1="740" x2="240" y2="780" stroke="#16a34a" stroke-width="2" marker-end="url(#ag)"/>
+  <rect x="100" y="780" width="280" height="40" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="240" y="797" fill="#14532d" font-size="11" font-weight="700" text-anchor="middle">⑨ 拿到 response，先判 stop_reason</text>
+  <text x="240" y="811" fill="#166534" font-size="9" text-anchor="middle">注意：Path 1 在 try 块**外**判</text>
+
+  <line x1="240" y1="820" x2="240" y2="850" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- stop_reason diamond (Path 1) -->
+  <polygon points="240,852 320,888 240,924 160,888" fill="#fff" stroke="#d97706" stroke-width="2"/>
+  <text x="240" y="882" fill="#92400e" font-size="10" font-weight="700" text-anchor="middle">stop_reason</text>
+  <text x="240" y="894" fill="#92400e" font-size="10" font-weight="700" text-anchor="middle">== "max_tokens"?</text>
+  <text x="240" y="907" fill="#b45309" font-size="9" text-anchor="middle">(Path 1)</text>
+
+  <!-- ============== Layer 1 except boxes (right side, x=660-960) ============== -->
+  <!-- Outer except: prompt_too_long (Path 2) -->
+  <rect x="660" y="438" width="380" height="180" rx="8" fill="url(#try1)" stroke="#d97706" stroke-width="2.5"/>
+  <text x="680" y="460" fill="#92400e" font-size="13" font-weight="700">Layer 1 · except Path 2</text>
+  <text x="680" y="476" fill="#b45309" font-size="10">is_prompt_too_long_error(e) → True</text>
+
+  <polygon points="850,490 920,525 850,560 780,525" fill="#fff" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="850" y="519" fill="#9a3412" font-size="9" font-weight="700" text-anchor="middle">未 compact</text>
+  <text x="850" y="531" fill="#9a3412" font-size="9" font-weight="700" text-anchor="middle">过?</text>
+  <text x="850" y="545" fill="#9a3412" font-size="9" font-weight="700" text-anchor="middle">✓</text>
+
+  <!-- Yes: compact + continue -->
+  <line x1="780" y1="525" x2="730" y2="525" stroke="#ea580c" stroke-width="2" marker-end="url(#ao)"/>
+  <line x1="730" y1="525" x2="730" y2="488" stroke="#ea580c" stroke-width="2" marker-end="url(#ao)"/>
+  <text x="738" y="513" fill="#ea580c" font-size="9" font-weight="600">→ ⑤ 收</text>
+
+  <text x="680" y="500" fill="#c2410c" font-size="9" font-weight="600">⑤ 首次：reactive_compact(messages[:])</text>
+  <text x="680" y="513" fill="#7c3aed" font-size="9">set has_attempted_reactive_compact = True</text>
+  <text x="680" y="540" fill="#16a34a" font-size="9" font-weight="600">→ continue 回到 ② while 顶部</text>
+  <text x="680" y="555" fill="#64748b" font-size="8" font-style="italic">(messages 已替换为更短版本)</text>
+
+  <line x1="680" y1="600" x2="200" y2="600" stroke="#16a34a" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ag)"/>
+  <text x="420" y="592" fill="#16a34a" font-size="10" font-weight="700">↑ continue 回到 ② while 顶部，用更短 messages 再试</text>
+
+  <!-- raise arrow lands in this box from Layer 2 -->
+  <line x1="640" y1="525" x2="660" y2="525" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+
+  <!-- No: already compacted → unrecoverable -->
+  <line x1="850" y1="560" x2="850" y2="580" stroke="#dc2626" stroke-width="2"/>
+  <line x1="850" y1="580" x2="1080" y2="580" stroke="#dc2626" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="1070" y="558" width="380" height="46" rx="6" fill="#fecaca" stroke="#dc2626" stroke-width="2"/>
+  <text x="1260" y="578" fill="#7f1d1d" font-size="11" font-weight="700" text-anchor="middle">⑥ 不可恢复（compact 后还超）</text>
+  <text x="1260" y="593" fill="#991b1b" font-size="9" text-anchor="middle">append [Error] 消息 → return 退出 agent_loop</text>
+
+  <line x1="920" y1="525" x2="1080" y2="580" stroke="#dc2626" stroke-width="2" stroke-dasharray="3 2" marker-end="url(#ar)"/>
+  <text x="950" y="548" fill="#dc2626" font-size="9" font-weight="600">已 compact → 不可恢复</text>
+
+  <!-- Outer except: 兜底 (catch-all) -->
+  <rect x="660" y="640" width="380" height="120" rx="8" fill="#fecaca" stroke="#dc2626" stroke-width="2.5"/>
+  <text x="680" y="662" fill="#7f1d1d" font-size="13" font-weight="700">Layer 1 · except 兜底（catch-all）</text>
+  <text x="680" y="678" fill="#991b1b" font-size="10">不是 prompt_too_long 的所有异常</text>
+  <text x="680" y="694" fill="#475569" font-size="10">name = type(e).__name__  (如 BadRequestError、PermissionError...)</text>
+  <text x="680" y="708" fill="#475569" font-size="10">print(f"[unrecoverable] {name}: {str(e)[:100]}")</text>
+  <text x="680" y="722" fill="#475569" font-size="10">→ append [Error] 消息</text>
+  <text x="680" y="745" fill="#dc2626" font-size="11" font-weight="700" text-anchor="middle">→ return 退出 agent_loop（告诉用户"我坏了"）</text>
+
+  <!-- raise arrow from Layer 2 to this box -->
+  <line x1="640" y1="700" x2="660" y2="700" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+
+  <!-- ============== Path 1 (right side: x=1080-1460) ============== -->
+  <!-- Header for Path 1 column -->
+  <rect x="1070" y="240" width="380" height="44" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="1260" y="261" fill="#92400e" font-size="11" font-weight="700" text-anchor="middle">Path 1 · max_tokens 处理（在 try 块外）</text>
+  <text x="1260" y="275" fill="#b45309" font-size="9" text-anchor="middle">max_tokens 不是异常，是 API 正常返回的字段</text>
+
+  <!-- Arrow: stop_reason diamond "Yes" → Path 1 column -->
+  <line x1="320" y1="888" x2="1060" y2="888" stroke="#d97706" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ao)"/>
+  <text x="700" y="881" fill="#d97706" font-size="11" font-weight="700">是 → 进入 Path 1</text>
+
+  <!-- has_escalated diamond -->
+  <polygon points="1170,860 1250,895 1170,930 1090,895" fill="#fff" stroke="#d97706" stroke-width="2"/>
+  <text x="1170" y="889" fill="#92400e" font-size="10" font-weight="700" text-anchor="middle">has_escalated</text>
+  <text x="1170" y="902" fill="#92400e" font-size="10" font-weight="700" text-anchor="middle">== False?</text>
+
+  <!-- Yes: 8K → 64K escalation -->
+  <line x1="1090" y1="895" x2="1080" y2="895" stroke="#d97706" stroke-width="2" marker-end="url(#ao)"/>
+  <line x1="1080" y1="895" x2="1080" y2="1000" stroke="#d97706" stroke-width="2"/>
+  <line x1="1080" y1="1000" x2="500" y2="1000" stroke="#d97706" stroke-width="2" marker-end="url(#ao)"/>
+  <line x1="500" y1="1000" x2="500" y2="1010" stroke="#d97706" stroke-width="2"/>
+  <line x1="500" y1="1010" x2="200" y2="1010" stroke="#d97706" stroke-width="2" marker-end="url(#ao)"/>
+  <line x1="200" y1="1010" x2="200" y2="350" stroke="#d97706" stroke-width="2" marker-end="url(#ao)"/>
+
+  <rect x="600" y="978" width="470" height="48" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="835" y="996" fill="#92400e" font-size="11" font-weight="700" text-anchor="middle">⑪ 升级 8K→64K</text>
+  <text x="835" y="1010" fill="#b45309" font-size="9" text-anchor="middle">set max_tokens = 64000  ·  has_escalated = True  ·  messages 不变</text>
+  <text x="835" y="1022" fill="#16a34a" font-size="9" font-weight="600" text-anchor="middle">→ continue 回到 ② while 顶部，用 64K 重发同样的请求</text>
+
+  <!-- No: already escalated, check recovery_count -->
+  <line x1="1250" y1="895" x2="1280" y2="895" stroke="#d97706" stroke-width="2" marker-end="url(#a)"/>
+  <polygon points="1370,860 1450,895 1370,930 1290,895" fill="#fff" stroke="#d97706" stroke-width="2"/>
+  <text x="1370" y="889" fill="#92400e" font-size="10" font-weight="700" text-anchor="middle">recovery_count</text>
+  <text x="1370" y="902" fill="#92400e" font-size="10" font-weight="700" text-anchor="middle">&lt; 3?</text>
+
+  <!-- Yes: continuation prompt -->
+  <line x1="1370" y1="930" x2="1370" y2="1080" stroke="#ea580c" stroke-width="2" marker-end="url(#ao)"/>
+  <rect x="1170" y="1080" width="280" height="70" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+  <text x="1310" y="1100" fill="#92400e" font-size="11" font-weight="700" text-anchor="middle">⑫ 续写</text>
+  <text x="1310" y="1115" fill="#b45309" font-size="9" text-anchor="middle">messages.append(截断输出 + 续写 prompt)</text>
+  <text x="1310" y="1128" fill="#b45309" font-size="9" text-anchor="middle">recovery_count += 1</text>
+  <text x="1310" y="1141" fill="#16a34a" font-size="9" font-weight="600" text-anchor="middle">→ continue 回到 ②</text>
+
+  <!-- Arrow from ⑫ back to ② (route around right side) -->
+  <line x1="1170" y1="1115" x2="250" y2="1115" stroke="#16a34a" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ag)"/>
+  <line x1="250" y1="1115" x2="250" y2="350" stroke="#16a34a" stroke-width="2" marker-end="url(#ag)"/>
+  <text x="700" y="1107" fill="#16a34a" font-size="10" font-weight="700">↑ continue 绕回 ② while 顶部</text>
+
+  <!-- No: recovery limit reached -->
+  <line x1="1450" y1="895" x2="1460" y2="895" stroke="#dc2626" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="1300" y="938" width="170" height="48" rx="6" fill="#fecaca" stroke="#dc2626" stroke-width="2"/>
+  <text x="1385" y="958" fill="#7f1d1d" font-size="11" font-weight="700" text-anchor="middle">⑬ 续写 3 次仍截断</text>
+  <text x="1385" y="973" fill="#991b1b" font-size="9" text-anchor="middle">→ return 退出</text>
+
+  <!-- ============== ⑩ 正常路径 (after stop_reason == "max_tokens" is False) ============== -->
+  <line x1="160" y1="888" x2="100" y2="888" stroke="#16a34a" stroke-width="2" marker-end="url(#ag)"/>
+  <text x="105" y="881" fill="#16a34a" font-size="9" font-weight="600">否 → ⑩</text>
+  <rect x="100" y="930" width="280" height="80" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="240" y="950" fill="#14532d" font-size="11" font-weight="700" text-anchor="middle">⑩ 正常路径</text>
+  <text x="240" y="965" fill="#166534" font-size="9" text-anchor="middle">messages.append(response.content)</text>
+  <text x="240" y="978" fill="#166534" font-size="9" text-anchor="middle">若 stop_reason == "tool_use" → 执行工具</text>
+  <text x="240" y="991" fill="#166534" font-size="9" text-anchor="middle">否则 → return 退出 agent_loop，回到 L0 打印</text>
+
+  <!-- continue back to ② from ⑩ (loop back) -->
+  <line x1="100" y1="950" x2="80" y2="950" stroke="#ea580c" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ao)"/>
+  <line x1="80" y1="950" x2="80" y2="350" stroke="#ea580c" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ao)"/>
+  <text x="20" y="650" fill="#ea580c" font-size="10" font-weight="700" transform="rotate(-90 20 650)">continue (tool_use) → 回到 ② 顶部</text>
+
+  <!-- ============== Summary panel ============== -->
+  <rect x="30" y="1180" width="1440" height="36" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="50" y="1202" fill="#1e293b" font-size="12" font-weight="700">📋 分层职责</text>
+  <text x="180" y="1202" fill="#334155" font-size="11">外层（agent_loop）管"改输入"：context 大就 compact、输出截断就升级 max_tokens / 续写、其他错误兜底退出</text>
+  <text x="180" y="1214" fill="#334155" font-size="10">内层（with_retry）只管"等一下重试"：429 退避、529 退避 + 切模型，其他全部 raise 让外层决定</text>
+
+</svg>

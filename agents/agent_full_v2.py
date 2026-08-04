@@ -24,6 +24,7 @@ from tools import (
 from skills import SkillLoader
 from llm_manage import LLMClient
 from system_prompt import SystemPromptBuilder
+from error_recovery import ErrorRecovery, RecoveryAction
 # from check_permission import check_permission
 from hooks import HookSystem
 
@@ -46,6 +47,8 @@ except ImportError:
 load_dotenv(override=True)
 
 MODEL = os.environ.get("OPENAI_MODEL_ID", "")
+FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL_ID", "")
+
 
 
 # 系统prompt
@@ -61,8 +64,13 @@ SKILLS = SkillLoader(SKILLS_DIR)
 # 子智能体单实例：复用工具集/处理器/hooks，避免每次 sub_agent 调用都重新实例化
 SUB_AGENT_RUNNER = SubAgent(BASE_TOOL, TOOL_HANDLERS, hook_system)
 
+# S11 错误恢复控制器：429/503 重试、max_tokens 截断恢复、prompt 超长压缩
+recovery = ErrorRecovery(primary_model=MODEL, fallback_model=FALLBACK_MODEL)
+
 # 最大智能体循环迭代次数，防止无限循环导致程序卡死
 MAX_AGENT_ITERATIONS = 100
+
+
 
 
 def _execute_tool_call(tool_call: dict) -> dict:
@@ -105,6 +113,9 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
     iteration = 0  # 循环迭代计数
     rounds_since_todo = 0  # 记录距离上次调用 todo 工具的轮数，用于 nag reminder
 
+    # 这里可以增加s10课程中更新systemprompt的逻辑，同时更新内存message和会话记录的jsonl文件。
+    # 这样可以保证记忆、工具、skill的实时更新，但会影响缓存未命中率。
+
     while True:
         iteration += 1
         if iteration > MAX_AGENT_ITERATIONS:
@@ -123,32 +134,63 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         # 在调用 LLM 前检查上下文，达到阈值时阻塞执行压缩并同步会话文件。
         session_manager.maybe_compact_context(history_messages, session_file)
 
-        #调用大模型执行当前轮次的回复
-        llm_response = llm_client.chat.completions.create(
-            model=MODEL,
-            messages=history_messages,
-            tools=MAIN_AGENT_TOOLS,
-            tool_choice="auto", #工具选择，值域 none、auto、required，默认 auto
-            parallel_tool_calls=True, #是否并行执行工具调用，默认 False
-            stream=False, #是否流式输出，默认 False
-            temperature=0.5,
-            reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
-            extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
-        )
-        # 从大模型回复中提取消息
-        response_msg = llm_response.choices[0].message
-        # 提取大模型回复中的工具调用
-        response_tool_calls = response_msg.tool_calls or []
-        #打印大模型的思考和回复内容
-        print(f"[本轮思考] {response_msg.reasoning_content}")
-        print(f"[本轮回复] {response_msg.content}")
-        
+        #S11 Error Recovery — 错误不是结束，是重试的开始（详见 agents/error_recovery.py）
+        try:
+            #调用大模型执行当前轮次的回复
+            # lambda 通过闭包把当前轮次的 max_tokens / model 锁住，控制器在循环里
+            # 可能会通过 ESCALATE / FALLBACK 改变这些值，但本轮 lambda 已固定
+            llm_response = recovery.with_retry(
+                lambda mt=recovery.current_max_tokens, mdl=recovery.current_model:
+                llm_client.chat.completions.create(
+                    model=mdl,
+                    messages=history_messages,
+                    max_tokens=mt,
+                    tools=MAIN_AGENT_TOOLS,
+                    tool_choice="auto", #工具选择，值域 none、auto、required，默认 auto
+                    parallel_tool_calls=True, #是否并行执行工具调用，默认 False
+                    stream=False, #是否流式输出，默认 False
+                    temperature=0.5,
+                    reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
+                    extra_body={"thinking": {"type": "enabled"}}, #思考模式开关，值范围 disabled、enabled，默认 enabled
+                )
+            )
+            # 从大模型回复中提取消息
+            response_msg = llm_response.choices[0].message
+            # 提取大模型回复中的工具调用
+            response_tool_calls = response_msg.tool_calls or []
+            #打印大模型的思考和回复内容
+            print(f"[本轮思考] {response_msg.reasoning_content}")
+            print(f"[本轮回复] {response_msg.content}")
+
+
+        except Exception as e:
+            # 外层异常处理：内层 with_retry 主动 raise 出来的"非临时错误"会到这一层。
+            # 控制器根据错误类型决定：继续重试（CONTINUE）或退出（ABORT）。
+            if recovery.handle_exception(
+                e, history_messages, session_manager, session_file
+            ) == RecoveryAction.ABORT:
+                return
+            continue
+
+        # Path 1：max_tokens 截断恢复
+        # 注意：max_tokens 不是异常，是 API 正常返回的 finish_reason 之一
+        # DeepSeek 走 OpenAI 兼容协议，没有 Anthropic 的 stop_reason 字段；
+        # 截断的判定在 choices[0].finish_reason == "length"（OpenAI 官方语义）
+        if llm_response.choices[0].finish_reason == "length":
+            if recovery.handle_truncation(
+                response_msg, history_messages, session_manager, session_file
+            ) == RecoveryAction.ABORT:
+                return
+            continue
+
+        # ── 正常完成：把 assistant 的回复追加到对话历史 ──
+        # 注意：这里的 response.content 是模型完整返回的内容
+        # （如果是 max_tokens 截断，就已经在上面 append 过了，不会走到这里）
         # 将 Pydantic 模型转换为 dict，保留 role/content/reasoning_content/tool_calls 等字段
         response_msg_dict = response_msg.model_dump()
-        # 加入大模型回复到历史消息中
+        # 加入大模型回复到历史消息中,role 为 assistant，包含思考过程和回答内容
         history_messages.append(response_msg_dict)
         session_manager.append_message_to_session(session_file, response_msg_dict)
-        
 
         if len(response_tool_calls) == 0:
             #增加一个hook，用于在大模型回复中检查是否需要强制结束当前轮次
@@ -159,7 +201,6 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
                 continue
             return
 
-        
         print(f"》》》》》》》》[本轮 tool_calls 数量] {len(response_tool_calls)}")
         print(response_tool_calls)
         print("*********")
@@ -182,48 +223,38 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             # 执行工具调用或 sub_agent 调用
             tool_call_result = _execute_tool_call(tool_call)
             tool_call_results.append(tool_call_result)
+
             # s04: post hook
             hook_system.trigger("PostToolUse", tool_call, tool_call_result)  
 
         # 并行执行 parallel=true 的工具,
         # 目前先注释掉，不支持并行执行，因为当前的并行并未考虑到当同时返回多个工具时，多个工具有并行和顺序执行的执行顺序情况，目前仅为同时并行或同时串行。
 
-        # 检查todo更新情况，若3轮未更新则给大模型添加更新todo的提醒
-        rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
-        if TODO_MANAGER.has_open_items() and rounds_since_todo >= 3:
-            tool_call_results.insert(0, {"type": "text", "text": "<reminder>Update your tasks.</reminder>"})
-
-        print("》》》》》》》》")
-        # 加入工具执行结果到历史消息中
-        for tc in response_tool_calls:
-            # 找到对应 tool_call_id 的执行结果
-            result = next(
-                (r for r in tool_call_results if r.get("tool_call_id") == tc.id),
-                None,
-            )
-            if result is None:
-                tool_content = json.dumps(
-                    {"error": f"No result found for tool_call_id {tc.id}"},
-                    ensure_ascii=False,
-                )
-            elif isinstance(result, dict):
-                # tool message 的 content 字段就是工具输出字符串本身
-                # result 里多带的 role/tool_name/tool_args/tool_call_id 是给 hook 用的元数据,
-                # 不应再被 json.dumps 二次序列化进 content (会导致 session jsonl 双层嵌套)
-                # 同时确保 content 一定是 string (OpenAI tool message 规范),
-                # 如果 handler 偷懒返回了 dict, 兜底再 json.dumps 一次
-                inner = result.get("content", "")
-                tool_content = inner if isinstance(inner, str) else json.dumps(inner, ensure_ascii=False)
-            else:
-                # 防御性兜底: 当前 _execute_tool_call 总是返回 dict, 此分支理论上不可达
-                # str() 不会产生 JSON 嵌套, 安全
-                tool_content = str(result)
-            tool_msg = {"role": "tool", "content": tool_content, "tool_call_id": tc.id}
+        # 串行执行下, tool_call_results 与 response_tool_calls 顺序一一对应, 直接 zip 组装 tool message
+        # 后续扩展: 并行执行 parallel=true 的工具, 需要根据工具的 parallel 参数, 分组执行, 并在每个组内按顺序执行, 保持与大模型回复的 tool_calls 顺序一致
+        for tc, result in zip(response_tool_calls, tool_call_results):
+            # result.content 约定是字符串; 兜底处理 handler 偷懒返回 dict 的情况,
+            # 避免二次 json.dumps 导致 session jsonl 出现双层嵌套
+            content = result.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False)
+            tool_msg = {"role": "tool", "content": content, "tool_call_id": tc.id}
             history_messages.append(tool_msg)
             session_manager.append_message_to_session(session_file, tool_msg)
 
+        # todo 更新追踪: 本轮用了 todo 就清零, 否则累加;
+        # 连续 3 轮未更新且仍有 open items 时, 注入提醒作为本轮最后一条消息, 并清零避免重复打扰
+        rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
+        if rounds_since_todo >= 3 and TODO_MANAGER.has_open_items():
+            reminder_msg = {"role": "user", "content": "<reminder>Update your tasks.</reminder>"}
+            history_messages.append(reminder_msg)
+            session_manager.append_message_to_session(session_file, reminder_msg)
+            rounds_since_todo = 0
+
 
 def main():
+    #这里和教程不同的地方是systemprompt没有放到agentloop中去实时更新，而是在初始化时就构建好，
+    # 这样可以保证高缓存命中率，但不能保证记忆、工具、skill的实时更新。
     session_manager = SessionManager(CHAT_HISTORY_DIR, SYSTEM.build_system_prompt())
     session_num, session_file, history_messages = session_manager.init_session()
     

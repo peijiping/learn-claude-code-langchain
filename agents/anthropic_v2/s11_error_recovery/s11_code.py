@@ -55,9 +55,11 @@ MAX_RECOVERY_RETRIES = 3
 MAX_RETRIES = 10
 BASE_DELAY_MS = 500
 MAX_CONSECUTIVE_529 = 3
+# 续写提示：模型输出被 max_tokens 截断后，追加到 messages 的 user 消息
+# 要求：直接接着写，不要道歉、不要复述上文、从中途断掉的地方继续
 CONTINUATION_PROMPT = (
-    "Output token limit hit. Resume directly — "
-    "no apology, no recap. Pick up mid-thought."
+    "输出已达 token 上限，直接续写 —— "
+    "不要道歉，不要复述，从中途中断处接着往下写。"
 )
 
 # ── Prompt Assembly (from s10, synced) ──
@@ -180,35 +182,51 @@ def retry_delay(attempt, retry_after=None):
 
 
 def with_retry(fn, state: RecoveryState):
-    """Exponential backoff for transient errors (429/529).
-    Non-transient errors are re-raised for the outer handler."""
+    """
+    【内层异常处理】—— 只负责"透明重试"。
+
+    职责范围：仅处理临时性错误（429 限流 / 529 服务过载），
+    通过指数退避 + 抖动等待后，**用相同的入参**重新调用 fn。
+
+    不能处理的错误（比如 prompt_too_long、auth 失败等）：
+    会立即 raise 出去，交给外层 except 决定怎么恢复（通常是改输入或放弃）。
+    """
+    # 最多重试 MAX_RETRIES（10）次；attempt 从 0 开始
     for attempt in range(MAX_RETRIES):
         try:
+            # 调用真正的 LLM 请求（lambda 封装的那行 client.messages.create）
             result = fn()
+            # 成功：把 529 连续计数器清零（说明服务端恢复了）
             state.consecutive_529 = 0
             return result
         except Exception as e:
             name = type(e).__name__
             msg = str(e).lower()
 
-            # 429 rate limit -> exponential backoff
+            # ── 分支 1：429 限流 ──
+            # 现象：请求太快，API 拒绝；处理：等一会儿再试，**不修改任何入参**
             if "ratelimit" in name.lower() or "429" in msg:
-                delay = retry_delay(attempt)
+                delay = retry_delay(attempt)            # 指数退避 + 抖动
                 print(f"  \033[33m[429 rate limit] retry {attempt+1}/{MAX_RETRIES},"
                       f" wait {delay:.1f}s\033[0m")
                 time.sleep(delay)
-                continue
+                continue                                 # 回到 for 顶部，再试一次
 
-            # 529 overloaded -> exponential backoff + fallback model
+            # ── 分支 2：529 服务端过载 ──
+            # 现象：上游模型服务器忙不过来；处理：退避等待，
+            # 如果连续多次 529 且配置了 FALLBACK_MODEL，则切换到备用模型
             if "overloaded" in name.lower() or "529" in msg or "overloaded" in msg:
                 state.consecutive_529 += 1
+                # 连续 3 次 529，触发"换模型"策略
                 if state.consecutive_529 >= MAX_CONSECUTIVE_529:
                     if FALLBACK_MODEL:
+                        # 切换到备用模型，并把计数器清零（在新模型上重新计数）
                         state.current_model = FALLBACK_MODEL
                         state.consecutive_529 = 0
                         print(f"  \033[31m[529 x{MAX_CONSECUTIVE_529}]"
                               f" switching to {FALLBACK_MODEL}\033[0m")
                     else:
+                        # 没配备用模型，只能继续重试主模型
                         state.consecutive_529 = 0
                         print(f"  \033[31m[529 x{MAX_CONSECUTIVE_529}]"
                               f" no FALLBACK_MODEL_ID configured, continuing retry\033[0m")
@@ -218,8 +236,12 @@ def with_retry(fn, state: RecoveryState):
                 time.sleep(delay)
                 continue
 
-            # Not transient -> re-raise for outer try/except
+            # ── 既不是 429 也不是 529：属于"无法靠重试解决"的错误 ──
+            # 例如：prompt_too_long、context 超限、auth 失败、参数错误等。
+            # 这里的 raise 是"我不处理，往上传"的信号，
+            # 外层 except 会接住并按错误类型做 compact / 放弃等策略。
             raise
+    # 10 次重试全部用完（429/529 始终没恢复），抛错给外层
     raise RuntimeError(f"Max retries ({MAX_RETRIES}) exceeded")
 
 
@@ -269,8 +291,19 @@ def agent_loop(messages: list, context: dict):
     max_tokens = DEFAULT_MAX_TOKENS
 
     while True:
-        # ── LLM call: with_retry handles 429/529, outer handles rest ──
+        # ── LLM 调用：内层 with_retry 管 429/529 重试；外层 except 管其他错误 ──
         try:
+            # 把 LLM 请求包成 lambda 有两个目的：
+            #   1) with_retry(fn, state) 的签名要求 fn 是"无参可调用对象"，
+            #      而 client.messages.create() 需要传 model/max_tokens 等参数，
+            #      用 lambda 包一层，调用时直接 fn() 即可。
+            #   2) 默认参数 mt=max_tokens, mdl=state.current_model 是"值快照"——
+            #      lambda 定义那一行，就把这一轮的 max_tokens / model
+            #      拷贝到 lambda 自己的形参里锁住；后续即使外层改了这两个变量，
+            #      这个已经创建好的 lambda 用到的还是旧值。
+            # 关键：lambda 写在 while 循环里，每轮迭代都会重新创建一次，
+            # 所以 max_tokens 从 8K 改到 64K 之后，是靠"下一轮重新定义 lambda"
+            # 让新 lambda 锁住 64K，而不是靠闭包去读变量名。
             response = with_retry(
                 lambda mt=max_tokens, mdl=state.current_model:
                     client.messages.create(
@@ -278,46 +311,65 @@ def agent_loop(messages: list, context: dict):
                         tools=TOOLS, max_tokens=mt),
                 state)
         except Exception as e:
-            # Path 2: prompt_too_long -> reactive compact (once)
+            # 【外层异常处理】—— 内层 with_retry 主动 raise 出来的"非临时错误"会到这一层。
+            # 这里的策略是"修改输入后再试"或"放弃"，不是简单的重试。
+
+            # ── Path 2：prompt 超出模型上下文窗口 ──
+            # 现象：API 报错说 prompt 太长；处理：压缩 messages 后再试一次
             if is_prompt_too_long_error(e):
                 if not state.has_attempted_reactive_compact:
+                    # 第一次触发：做一次紧急压缩（保留最近 5 条 + 一条提示消息）
+                    # messages[:] = ... 是原地替换列表内容，让外层引用也看到新内容
                     messages[:] = reactive_compact(messages)
+                    # 标记"已经试过 compact"，避免下次又触发 compact 陷入死循环
                     state.has_attempted_reactive_compact = True
-                    continue
+                    continue                              # 回到 while 顶部，用更短的 messages 再试
+                # 第二次还超长 → 没救了，向用户报告错误
                 print("  \033[31m[unrecoverable] still too long after compact\033[0m")
                 messages.append({"role": "assistant", "content": [
                     {"type": "text",
                      "text": "[Error] Context too large, cannot continue."}]})
                 return
 
-            # Unrecoverable
+            # ── 兜底：其他所有错误（auth 失败、参数错、未知异常等）──
+            # 既不能重试也不能 compact，直接退出当前轮
             name = type(e).__name__
             print(f"  \033[31m[unrecoverable] {name}: {str(e)[:100]}\033[0m")
             messages.append({"role": "assistant", "content": [
                 {"type": "text", "text": f"[Error] {name}: {str(e)[:200]}"}]})
             return
 
-        # ── Path 1: max_tokens -> escalate or continue ──
+        # ── Path 1：max_tokens 截断恢复 ──
+        # 注意：max_tokens 不是异常，是 API 正常返回的 stop_reason 之一
+        # 含义：模型想继续输出但被 max_tokens 上限截断，需要扩大额度让它说完
         if response.stop_reason == "max_tokens":
-            # First escalation: don't append truncated output, retry same request
+            # ── 第一阶段：扩大额度（8K → 64K）──
+            # 第一次遇到截断时不要把这段"断头输出"塞进 messages，
+            # 因为它很可能是半句话/半个 JSON，没啥用；直接把上限拉大重试更划算
             if not state.has_escalated:
-                max_tokens = ESCALATED_MAX_TOKENS
-                state.has_escalated = True
+                max_tokens = ESCALATED_MAX_TOKENS            # 8K → 64K
+                state.has_escalated = True                   # 标记：已升级过一次
                 print(f"  \033[33m[max_tokens] escalating"
                       f" {DEFAULT_MAX_TOKENS} -> {ESCALATED_MAX_TOKENS}\033[0m")
-                continue
-            # 64K still truncated: save truncated output + continuation prompt
+                continue                                     # 回到 while 顶部，用 64K 重发同样的请求
+
+            # ── 第二阶段：64K 还不够，进入"续写"模式 ──
+            # 此时输出截断是发生在"快要说完"的位置，把这部分内容留着
+            # 然后塞一条 user 提示让模型接着写
             messages.append({"role": "assistant", "content": response.content})
-            if state.recovery_count < MAX_RECOVERY_RETRIES:
+            if state.recovery_count < MAX_RECOVERY_RETRIES:  # 最多续写 3 次
                 messages.append({"role": "user", "content": CONTINUATION_PROMPT})
                 state.recovery_count += 1
                 print(f"  \033[33m[max_tokens] continuation"
                       f" {state.recovery_count}/{MAX_RECOVERY_RETRIES}\033[0m")
-                continue
+                continue                                     # 回到 while 顶部，让模型续写
+            # 续写 3 次还是截断 → 放弃，告诉用户
             print("  \033[31m[max_tokens] recovery limit reached\033[0m")
             return
 
-        # Normal completion: append assistant response
+        # ── 正常完成：把 assistant 的回复追加到对话历史 ──
+        # 注意：这里的 response.content 是模型完整返回的内容
+        # （如果是 max_tokens 截断，就已经在上面 append 过了，不会走到这里）
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":

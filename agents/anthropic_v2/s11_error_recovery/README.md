@@ -29,6 +29,18 @@ Agent 崩溃了。它没有重试，没有换模型，没有减少上下文—�
 
 s10 的循环、prompt 组装全部保留。唯一的变动：LLM 调用包裹在 try/except 里，根据错误类型走不同的恢复路径。恢复后 `continue` 回到循环开头重新调用 LLM。
 
+### 错误处理分层结构（外层 / 内层）
+
+![Error Recovery Layered](images/error-recovery-layered.svg)
+
+| 层级 | 函数 | 处理什么 | 不处理什么 |
+|------|------|----------|-----------|
+| **Layer 1 · 外层 try/except**（agent_loop） | 见 [code.py:295-331](code.py) | ① Path 2：`prompt_too_long` → `reactive_compact` ② 兜底：其他异常 → log + return ③ Path 1：拿到 response 后判 `stop_reason == "max_tokens"` | 429/529（这是临时错误，"等一下"就好，不该改输入） |
+| **Layer 2 · 内层 with_retry** | 见 [code.py:184-245](code.py) | ① 429：退避 + 重试（`consecutive_529` 不变）② 529：退避 + `consecutive_529 += 1`，累计 ≥3 切备用模型 ③ 10 次用完 → `raise RuntimeError` | `prompt_too_long`、auth 失败、参数错误等"改了输入也不一定好"的错误（直接 `raise` 给外层） |
+| **Layer 3 · 实际 LLM 调用** | `client.messages.create()` | 抛异常给 Layer 2 | — |
+
+**核心原则**：内层只管"等一下重试"（不修改任何入参），改输入的事交外层。
+
 三种最常见的恢复模式（教学版只处理 429/529；真实系统还覆盖连接错误、超时、云厂商认证缓存等。CC 实际有 13+ reason code，其余见 Deep dive）：
 
 | 模式 | 触发 | 恢复动作 |
