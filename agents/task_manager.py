@@ -7,15 +7,28 @@ task_manager.py - 任务管理模块
 """
 
 import json
+import time, random
 from pathlib import Path
+from dataclasses import dataclass, asdict
+
+from tool_base import TASKS_DIR
 
 
-def _unique_preserve_order(values: list) -> list:
-    result = []
-    for value in values:
-        if value not in result:
-            result.append(value)
-    return result
+@dataclass
+class Task:
+    # 任务的唯一标识符,格式: task_{时间戳}_{4位随机数}
+    id: str
+    # 任务标题(简短描述,用于列表展示)
+    subject: str
+    # 任务详细描述(可包含具体执行要求、验收标准等)
+    description: str
+    # 任务状态机: pending(待处理) | in_progress(进行中) | completed(已完成)
+    status: str
+    # 任务认领者,多 agent 场景下记录是哪个 agent 在负责;None 表示尚未认领
+    owner: str | None
+    # 依赖任务 ID 列表:所有列出的任务必须 completed 后,本任务才能开始
+    # 注意:缺失的依赖(即 ID 不存在)也会被当作阻塞,防止悬空引用
+    blockedBy: list[str]
 
 
 # -- TaskManager: 支持依赖关系图的CRUD操作，数据持久化为JSON文件 --
@@ -27,356 +40,185 @@ class TaskManager:
     每个任务以独立的JSON文件形式存储在指定目录中。
     """
     
-    def __init__(self, tasks_dir: Path):
+    def __init__(self, tasks_dir: Path | None = None):
         """
         初始化任务管理器
         
         Args:
-            tasks_dir: 任务数据存储目录的路径
+            tasks_dir: 任务数据存储目录的路径,不传则默认使用 TASKS_DIR
         """
-        self.dir = tasks_dir  # 任务文件存储目录
-        self.dir.mkdir(exist_ok=True)  # 如果目录不存在则创建
-        self._next_id = self._max_id() + 1  # 初始化下一个任务ID
+        self.task_dir = tasks_dir if tasks_dir else TASKS_DIR  # 任务文件存储目录
+        self.task_dir.mkdir(exist_ok=True)  # 如果目录不存在则创建
 
-    def _max_id(self) -> int:
+    def _task_path(self, task_id: str) -> Path:
+        """根据 task_id 返回对应的 JSON 文件路径(私有内部工具函数)。"""
+        return self.task_dir / f"{task_id}.json"
+
+    def _create_task(self, subject: str, description: str = "",
+                    blockedBy: list[str] | None = None) -> Task:
         """
-        获取当前最大的任务ID
-        
-        遍历任务目录中的所有任务文件，提取ID并返回最大值。
-        如果没有任务文件，返回0。
-        
-        Returns:
-            当前最大的任务ID
+        创建一个新任务。
+
+        - 自动生成全局唯一 ID(时间戳 + 随机数后缀,降低冲突概率)
+        - 初始状态为 pending,owner 为 None(尚未被认领)
+        - 立即落盘到 .tasks/{id}.json,确保创建即持久
+        - 可选 blockedBy 用于声明对其他任务的依赖(实现 DAG 编排)
         """
-        # 从文件名中提取任务ID（格式：task_{id}.json）
-        ids = [int(f.stem.split("_")[1]) for f in self.dir.glob("task_*.json")]
-        return max(ids) if ids else 0
+        task = Task(
+            id=f"task_{int(time.time())}_{random.randint(0, 9999):04d}",
+            subject=subject,
+            description=description,
+            status="pending",
+            owner=None,
+            blockedBy=blockedBy or [],
+        )
+        self._save_task(task)
+        return task
 
-    def _load(self, task_id: int) -> dict:
+
+    def _save_task(self, task: Task):
+        """将 Task 对象序列化为 JSON 并覆盖写入对应文件(每次状态变更都要调用)。"""
+        self._task_path(task.id).write_text(json.dumps(asdict(task), indent=2))
+
+
+    def _load_task(self, task_id: str) -> Task:
+        """从 JSON 文件加载并反序列化为 Task 对象;文件不存在时会抛 FileNotFoundError。"""
+        return Task(**json.loads(self._task_path(task_id).read_text()))
+
+
+    def _list_tasks(self) -> list[Task]:
+        """列出 .tasks/ 目录下所有 task_*.json 并按文件名字典序返回(等价于按时间排序)。"""
+        return [Task(**json.loads(p.read_text()))
+                for p in sorted(self.task_dir.glob("task_*.json"))]
+
+
+    def _get_task(self, task_id: str) -> str:
+        """返回任务的完整 JSON 详情字符串,供模型查看完整上下文。"""
+        task = self._load_task(task_id)
+        return json.dumps(asdict(task), indent=2)
+
+
+    def _can_start(self, task_id: str) -> bool:
         """
-        加载指定ID的任务数据
-        
-        Args:
-            task_id: 任务ID
-            
-        Returns:
-            任务数据的字典形式
-            
-        Raises:
-            ValueError: 当任务不存在时抛出
+        判断指定任务是否可以开始。
+
+        判定规则:
+        1) 遍历 task.blockedBy 列表中的每个依赖 ID
+        2) 若依赖文件不存在(被删除/拼写错误) → 视为阻塞(返回 False)
+            这样可以防止 agent 引用悬空 ID 时误执行
+        3) 若依赖存在但 status != "completed" → 阻塞
+        4) 所有依赖都 completed 才返回 True
         """
-        path = self.dir / f"task_{task_id}.json"
-        if not path.exists():
-            raise ValueError(f"Task {task_id} not found")
-        return json.loads(path.read_text(encoding="utf-8"))
+        task = self._load_task(task_id)
+        for dep_id in task.blockedBy:
+            if not self._task_path(dep_id).exists():
+                return False
+            if self._load_task(dep_id).status != "completed":
+                return False
+        return True
 
-    def _save(self, task: dict):
+
+    def _claim_task(self, task_id: str, owner: str = "agent") -> str:
         """
-        保存任务数据到文件
-        
-        Args:
-            task: 任务数据的字典，必须包含 'id' 字段
+        认领一个 pending 任务:把任务从 pending 推进到 in_progress。
+
+        流程:
+        1) 重新加载任务,获取最新状态(避免基于陈旧数据决策)
+        2) 状态必须是 pending,否则拒绝(已认领或已完成的任务不能再认领)
+        3) 调用 can_start 检查依赖;若仍被阻塞,返回具体阻塞原因(哪些依赖未完成)
+        4) 通过校验后:设置 owner 字段,状态置为 in_progress,立即落盘
+        5) 在终端打印蓝色日志,方便实时观察 agent 行为
         """
-        path = self.dir / f"task_{task['id']}.json"
-        path.write_text(json.dumps(task, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        task = self._load_task(task_id)
+        if task.status != "pending":
+            return f"Task {task_id} is {task.status}, cannot claim"
+        if not self._can_start(task_id):
+            # 收集所有未满足的依赖 ID,精确告知调用方卡在哪里
+            deps = [d for d in task.blockedBy
+                    if not self._task_path(d).exists() or self._load_task(d).status != "completed"]
+            return f"Blocked by: {deps}"
+        task.owner = owner
+        task.status = "in_progress"
+        self._save_task(task)
+        print(f"  \033[36m[claim] {task.subject} → in_progress (owner: {owner})\033[0m")
+        return f"Claimed {task.id} ({task.subject})"
 
-    def _dump(self, data) -> str:
-        return json.dumps(data, indent=2, ensure_ascii=False)
 
-    def _build_task(
-        self,
-        task_id: int,
-        subject: str,
-        description: str = "",
-        parent_id: int | None = None,
-        root_id: int | None = None,
-        order: int = 0,
-    ) -> dict:
-        return {
-            "id": task_id,
-            "subject": subject,
-            "description": description,
-            "status": "pending",
-            "blockedBy": [],
-            "blocks": [],
-            "owner": "",
-            "parent_id": parent_id,
-            "root_id": root_id if root_id is not None else task_id,
-            "order": order,
-        }
-
-    def create(self, subject: str, description: str = "") -> str:
+    def _complete_task(self, task_id: str) -> str:
         """
-        创建新任务
-        
-        Args:
-            subject: 任务主题/标题
-            description: 任务描述（可选）
-            
-        Returns:
-            JSON格式的任务数据字符串
-            
-        任务数据结构：
-            - id: 任务唯一标识
-            - subject: 任务主题
-            - description: 任务描述
-            - status: 任务状态（pending/in_progress/completed）
-            - blockedBy: 阻塞当前任务的前置任务ID列表
-            - blocks: 后置任务ID列表
-            - owner: 任务负责人
+        将 in_progress 任务标记为 completed。
+
+        关键副作用(重要!):
+        - 完成后会扫描所有 pending 任务,找出"因为本次完成而新解锁"的下游任务
+        - 即:该任务的 ID 出现在它们的 blockedBy 列表中、且其他依赖也已完成的任务
+        - 打印黄色 [unblocked] 日志,提醒 agent 优先调度这些可执行任务
+        - 这种"完成即触发依赖检查"的模式是 DAG 调度器的核心机制
         """
-        task = self._build_task(self._next_id, subject, description)
-        self._save(task)  # 保存到文件
-        self._next_id += 1  # 递增ID计数器
-        return self._dump(task)
+        task = self._load_task(task_id)
+        if task.status != "in_progress":
+            return f"Task {task_id} is {task.status}, cannot complete"
+        task.status = "completed"
+        self._save_task(task)
+        # 找出所有因为本次完成而新解锁的待办任务
+        unblocked = [t.subject for t in self._list_tasks()
+                    if t.status == "pending" and t.blockedBy and self._can_start(t.id)]
+        print(f"  \033[32m[complete] {task.subject} ✓\033[0m")
+        msg = f"Completed {task.id} ({task.subject})"
+        if unblocked:
+            msg += f"\nUnblocked: {', '.join(unblocked)}"
+            print(f"  \033[33m[unblocked] {', '.join(unblocked)}\033[0m")
+        return msg
 
-    def create_many(self, subject: str, description: str = "", steps: list = None) -> str:
+    # ── Task tools (面向模型工具调用的薄包装层) ──
+    # 这些 run_* 函数是核心业务函数(create_task / list_tasks 等)与 LLM 工具调用之间的桥梁。
+    # 主要职责:
+    #   1. 参数透传到业务函数
+    #   2. 用 ANSI 颜色在终端打印执行日志,方便观察 agent 行为
+    #   3. 决定返回给模型的字符串格式(简洁、便于模型解析)
+
+    def run_create_task(self, subject: str, description: str = "",
+                        blockedBy: list[str] | None = None) -> str:
         """
-        批量创建一个总任务和多个子任务。
-
-        steps 支持两种形式：
-            - "任务标题"
-            - {"subject": "任务标题", "description": "任务描述", "blockedBy": [2]}
-
-        如果 step 没有显式 blockedBy，则默认按步骤顺序串行依赖：第 N 步依赖第 N-1 步。
+        工具入口:创建任务。打印蓝色 [create] 日志,返回任务 ID 与依赖信息。
         """
-        if not steps:
-            raise ValueError("steps must contain at least one task")
+        task = self._create_task(subject, description, blockedBy)
+        deps = f" (blockedBy: {', '.join(blockedBy)})" if blockedBy else ""
+        print(f"  \033[34m[create] {task.subject}{deps}\033[0m")
+        return f"Created {task.id}: {task.subject}{deps}"
 
-        root_id = self._next_id
-        root = self._build_task(root_id, subject, description, order=0)
-        self._next_id += 1
 
-        child_tasks = []
-        for order, step in enumerate(steps, start=1):
-            if isinstance(step, str):
-                step_subject = step
-                step_description = ""
-                explicit_blocked_by = None
-            elif isinstance(step, dict):
-                step_subject = step.get("subject")
-                step_description = step.get("description", "")
-                explicit_blocked_by = step.get("blockedBy")
-            else:
-                raise ValueError("each step must be a string or object")
-
-            if not step_subject:
-                raise ValueError("each step must include a subject")
-
-            task = self._build_task(
-                self._next_id,
-                step_subject,
-                step_description,
-                parent_id=root_id,
-                root_id=root_id,
-                order=order,
-            )
-            self._next_id += 1
-
-            if explicit_blocked_by is not None:
-                task["blockedBy"] = _unique_preserve_order(explicit_blocked_by)
-            elif child_tasks:
-                task["blockedBy"] = [child_tasks[-1]["id"]]
-
-            child_tasks.append(task)
-
-        tasks_by_id = {root["id"]: root, **{task["id"]: task for task in child_tasks}}
-        for task in child_tasks:
-            for blocker_id in task["blockedBy"]:
-                blocker = tasks_by_id.get(blocker_id)
-                if blocker:
-                    blocker["blocks"] = _unique_preserve_order(blocker["blocks"] + [task["id"]])
-                else:
-                    try:
-                        blocker = self._load(blocker_id)
-                        blocker["blocks"] = _unique_preserve_order(blocker.get("blocks", []) + [task["id"]])
-                        self._save(blocker)
-                    except ValueError:
-                        pass
-
-        self._save(root)
-        for task in child_tasks:
-            self._save(task)
-
-        return self._dump({"root": root, "tasks": child_tasks})
-
-    def get(self, task_id: int) -> str:
+    def run_list_tasks(self) -> str:
         """
-        获取指定任务的信息
-        
-        Args:
-            task_id: 任务ID
-            
-        Returns:
-            JSON格式的任务数据字符串
+        工具入口:列出所有任务,带状态图标和依赖概览。
+        图标约定: ○ pending / ● in_progress / ✓ completed
         """
-        return self._dump(self._load(task_id))
-
-    def update(self, task_id: int, status: str = None,
-               add_blocked_by: list = None, add_blocks: list = None) -> str:
-        """
-        更新任务信息
-        
-        Args:
-            task_id: 要更新的任务ID
-            status: 新的任务状态（可选）
-            add_blocked_by: 要添加的阻塞当前任务的前置任务ID列表（可选）
-            add_blocks: 要添加的后置任务ID列表（可选）
-            
-        Returns:
-            JSON格式的更新后任务数据字符串
-            
-        Raises:
-            ValueError: 当状态值无效时抛出
-        """
-        task = self._load(task_id)  # 加载现有任务数据
-        
-        # 更新任务状态
-        if status:
-            # 验证状态值是否有效
-            if status not in ("pending", "in_progress", "completed"):
-                raise ValueError(f"Invalid status: {status}")
-            task["status"] = status
-            # 当任务完成时，从所有其他任务的blockedBy列表中移除该任务
-            if status == "completed":
-                self._clear_dependency(task_id)
-        
-        # 添加阻塞当前任务的任务（当前任务依赖于这些任务）
-        if add_blocked_by:
-            # 使用set去重后转回list
-            task["blockedBy"] = _unique_preserve_order(task["blockedBy"] + add_blocked_by)
-        
-        # 添加被当前任务阻塞的任务（这些任务依赖于当前任务）
-        if add_blocks:
-            task["blocks"] = _unique_preserve_order(task["blocks"] + add_blocks)
-            # 双向更新：同时更新被阻塞任务的blockedBy列表
-            for blocked_id in add_blocks:
-                try:
-                    blocked = self._load(blocked_id)
-                    if task_id not in blocked["blockedBy"]:
-                        blocked["blockedBy"].append(task_id)
-                        self._save(blocked)
-                except ValueError:
-                    # 如果被阻塞的任务不存在，忽略错误
-                    pass
-        
-        self._save(task)  # 保存更新后的任务
-        return self._dump(task)
-
-    def _clear_dependency(self, completed_id: int):
-        """
-        清除任务依赖关系
-        
-        当任务完成时，从所有其他任务的blockedBy列表中移除该任务ID。
-        这样可以解除其他任务对该已完成任务的依赖。
-        
-        Args:
-            completed_id: 已完成的任务ID
-        """
-        for f in self.dir.glob("task_*.json"):
-            task = json.loads(f.read_text(encoding="utf-8"))
-            if completed_id in task.get("blockedBy", []):
-                task["blockedBy"].remove(completed_id)
-                self._save(task)
-
-    def list_all(self) -> str:
-        """
-        列出所有任务
-        
-        以格式化的字符串形式返回所有任务的列表。
-        每个任务显示状态标记、ID、主题和阻塞信息。
-        
-        Returns:
-            格式化的任务列表字符串
-            
-        状态标记说明：
-            - [ ]: pending（待处理）
-            - [>]: in_progress（进行中）
-            - [x]: completed（已完成）
-            - [?]: 未知状态
-        """
-        tasks = []
-        for f in sorted(self.dir.glob("task_*.json")):
-            tasks.append(json.loads(f.read_text(encoding="utf-8")))
-        
+        tasks = self._list_tasks()
         if not tasks:
-            return "No tasks."
-        
+            return "No tasks. Use create_task to add some."
         lines = []
         for t in tasks:
-            marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t["status"], "[?]")
-            blocked = f" (blocked by: {t['blockedBy']})" if t.get("blockedBy") else ""
-            lines.append(f"{marker} #{t['id']}: {t['subject']}{blocked}")
-        
+            icon = {"pending": "○", "in_progress": "●",
+                    "completed": "✓"}.get(t.status, "?")
+            deps = f" (blockedBy: {', '.join(t.blockedBy)})" if t.blockedBy else ""
+            owner = f" [{t.owner}]" if t.owner else ""
+            lines.append(f"  {icon} {t.id}: {t.subject} "
+                        f"[{t.status}]{owner}{deps}")
         return "\n".join(lines)
 
-    def render(self) -> str:
-        """
-        渲染任务看板为可读字符串，按根任务分组展示。
 
-        吸收 todo 看板的可视化长处，支持：
-        - 按根任务分组，展示总任务与子任务的层级关系
-        - 每组的进度统计（completed / total）
-        - 状态标记与阻塞信息
+    def run_get_task(self, task_id: str) -> str:
+        """工具入口:获取任务完整 JSON 详情;找不到时返回友好错误而非抛异常。"""
+        try:
+            return self._get_task(task_id)
+        except FileNotFoundError:
+            return f"Error: Task {task_id} not found"
 
-        Returns:
-            格式化的任务看板字符串
-        """
-        tasks = []
-        for f in sorted(self.dir.glob("task_*.json")):
-            tasks.append(json.loads(f.read_text(encoding="utf-8")))
 
-        if not tasks:
-            return "No tasks."
+    def run_claim_task(self, task_id: str) -> str:
+        """工具入口:认领任务(默认 owner=agent)。业务逻辑在 claim_task 内。"""
+        return self._claim_task(task_id, owner="agent")
 
-        marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}
-        tasks_by_id = {t["id"]: t for t in tasks}
 
-        # 找出所有根任务（没有 parent_id 或 parent_id 指向自身的）
-        roots = [t for t in tasks
-                 if t.get("parent_id") is None or t.get("parent_id") == t["id"]]
-
-        lines = []
-        for root in roots:
-            # 收集该根任务下的子任务
-            children = [t for t in tasks
-                        if t.get("root_id") == root["id"] and t["id"] != root["id"]]
-            children.sort(key=lambda t: t.get("order", 0))
-
-            group = [root] + children
-            done = sum(1 for t in group if t["status"] == "completed")
-            total = len(group)
-            lines.append(f"#{root['id']}: {root['subject']} ({done}/{total} completed)")
-
-            for t in group:
-                blocked = f" (blocked by: {t['blockedBy']})" if t.get("blockedBy") else ""
-                indent = "  " if t["id"] != root["id"] else ""
-                lines.append(f"{indent}{marker.get(t['status'], '[?]')} #{t['id']}: {t['subject']}{blocked}")
-            lines.append("")
-
-        # 处理没有根任务的孤立任务
-        orphan = [t for t in tasks
-                  if t.get("parent_id") is not None and t.get("root_id") not in tasks_by_id]
-        if orphan:
-            lines.append("--- 独立任务 ---")
-            done = sum(1 for t in orphan if t["status"] == "completed")
-            total = len(orphan)
-            lines.append(f"独立任务 ({done}/{total} completed)")
-            for t in orphan:
-                blocked = f" (blocked by: {t['blockedBy']})" if t.get("blockedBy") else ""
-                lines.append(f"  {marker.get(t['status'], '[?]')} #{t['id']}: {t['subject']}{blocked}")
-
-        return "\n".join(lines)
-
-    def has_open_items(self) -> bool:
-        """
-        判断是否存在未完成的任务。
-
-        Returns:
-            True 表示存在 pending 或 in_progress 状态的任务
-        """
-        for f in self.dir.glob("task_*.json"):
-            task = json.loads(f.read_text(encoding="utf-8"))
-            if task.get("status") in ("pending", "in_progress"):
-                return True
-        return False
+    def run_complete_task(self, task_id: str) -> str:
+        """工具入口:完成任务;若解锁了下游任务,会附带 unblocked 提示。"""
+        return self._complete_task(task_id)

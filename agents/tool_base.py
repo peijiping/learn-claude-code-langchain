@@ -32,26 +32,23 @@ TODO_DIR = WORKDIR / ".todo"
 TEAM_DIR = WORKDIR / ".team"
 # 收件箱目录
 INBOX_DIR = WORKDIR / ".inbox"
-
 #对话历史目录
 CHAT_HISTORY_DIR = WORKDIR / ".chathistory"
-
 # L4 / reactive 时 transcript 落盘的目录名
 TRANSCRIPT_DIRNAME = WORKDIR / ".transcripts"
 # L3 落盘大 tool_result 的目录名
 TOOL_RESULTS_DIRNAME = WORKDIR / ".task_outputs/tool-results"
-
 # 记忆目录
 MEMORY_DIR = WORKDIR / ".memory"; MEMORY_DIR.mkdir(exist_ok=True)
 # 记忆索引文件
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
-
-
+# 任务目录
+TASKS_DIR = WORKDIR / ".tasks"
 
 
 CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 TODO_DIR.mkdir(parents=True, exist_ok=True)
-
+TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def todo_file_for_session(session_num: int) -> Path:

@@ -16,7 +16,7 @@ from tools import (
     MAIN_AGENT_TOOLS,
     TOOL_HANDLERS,
     WORKDIR,
-    BACKGROUND_MANAGER,
+    # BACKGROUND_MANAGER,
     CHAT_HISTORY_DIR,
     SKILLS_DIR,
     set_todo_manager,
@@ -144,15 +144,6 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         if iteration > MAX_AGENT_ITERATIONS:
             print(f"\033[31m[警告] 智能体循环达到最大迭代次数 ({MAX_AGENT_ITERATIONS})，强制结束\033[0m")
             break
-
-        # 在 LLM 调用之前，排空后台通知并注入为系统消息
-        notifs = BACKGROUND_MANAGER.drain_notifications()
-        if notifs and history_messages:
-            notif_text = "\n".join(
-                f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs
-            )
-            history_messages.append({"role": "user", "content": f"<background-results>\n{notif_text}\n</background-results>"})
-            history_messages.append({"role": "assistant", "content": "Noted background results."})
 
         # 在调用 LLM 前检查上下文，达到阈值时阻塞执行压缩并同步会话文件。
         session_manager.maybe_compact_context(history_messages, session_file)

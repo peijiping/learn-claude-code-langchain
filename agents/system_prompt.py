@@ -90,16 +90,40 @@ class SystemPromptBuilder:
 
 ## sub_agent（子智能体）
 **强制使用**（主对话不得直接执行）：读 ≥3 文件 / 读 PDF / 工具调用 ≥5 步 / 搜索或探索代码库。
-- 默认含执行工具但不含 todo；todo 只由主智能体维护
+- 默认含执行工具但不含 todo/task；待办与任务工具只由主智能体维护
 - 只读场景设 `allowed_tools=["bash","read_file","read_pdf"]`
 - 多任务并行 `parallel=true`；前后依赖 `parallel=false`
 
-# 待办（todo）
-**启用**：多步可验证 / 跨多轮 / 高风险 / 收尾需汇总；**跳过**：单步问答、改写、用户只要建议。
-**规范**：动手前先列全计划（pending）→ 开做即标 in_progress（同时仅 1 个）→ 完成立刻 completed → 新计划用 fresh_start 整体替换 → 最终回复前调一次 render 汇总。
+# 待办与任务（两套并存，按任务特征自选）
+你拥有**轻量的 TodoWrite** 和**重型的 TaskCreate/Update/Get/List**。两套机制可共存，不要默认只用其中一套。
+
+## L1：TodoWrite（单次响应内的轻量计划）
+**适用**：步骤 ≤7、全部在本响应内完成、不派 subagent、不需要跨 turn 持久、不需要跨子任务共享
+**规范**：动手前先列全（pending）→ 开做即标 in_progress（同时仅 1 个）→ 完成立刻 completed → 新计划用 fresh_start 整体替换 → 最终回复前调一次 render 汇总。
+
+## L2：TaskCreate / TaskUpdate / TaskGet / TaskList（重型任务）
+**适用**（满足任一即升级到 L2）：
+- 步骤 >7
+- 需要派 subagent 处理多个并行/串行子任务
+- 任务需要跨响应或跨会话持久
+- 任务间有依赖关系（A 完成才能做 B）→ 用 TaskUpdate 的 addBlockedBy / addBlocks
+- 多个 subagent 需要共享/认领同一份任务清单
+
+**字段**：subject / description / activeForm / owner / status / blocks / blockedBy / metadata
+**规范**：派 subagent 前先 TaskCreate 拆好 → 派工时通过 owner 或显式传 task_id 让 subagent 认领 → subagent 用 TaskUpdate 报告进度 → 主对话用 TaskList 收尾汇总。
+
+## L1 ↔ L2 决策树（按顺序判断）
+1. 用户请求是否需要派 subagent？ → **是：L2**
+2. 步骤是否 >7？ → **是：L2**
+3. 任务是否需要"明天接着做"或进程崩溃后恢复？ → **是：L2**
+4. 是否有明确依赖（A 完成才能做 B）？ → **是：L2**
+5. 多个 subagent 是否需要看到同一份任务清单？ → **是：L2**
+6. 以上全否 → **L1**
+
+> ⚠️ **当前实现状态**：L1（TodoWrite）已上线；L2（TaskCreate/Update/Get/List）正在开发，工具尚未注册。当决策树命中 L2 但工具不可用时：**先用 L1 推进，并在最终汇报里标注「建议后续改用 Task 工具」**；不要硬调不存在的工具。
 
 # 工作流
-判断复杂度 → 必要时启用 todo → 大量上下文/并行任务用 sub_agent → 同步进度 → 汇总产物与风险。
+判断复杂度 → 按 L1/L2 决策树选工具集 → 必要时启用 todo/task → 大量上下文/并行任务用 sub_agent → 同步进度 → 汇总产物与风险。
 """
 
     def _get_memory(self) -> str:

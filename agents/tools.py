@@ -14,8 +14,9 @@ tools.py - 工具定义和实现模块
 from pathlib import Path
 from skills import SkillLoader
 from todo_manager import TodoManager
-from background_manager import BackgroundManager
-from teammate_manager import TeammateManager
+from task_manager import TaskManager
+# from background_manager import BackgroundManager
+# from teammate_manager import TeammateManager
 from message_bus import MessageBus, VALID_MSG_TYPES
 from memories import MemoryStore
 from tool_base import (
@@ -37,13 +38,17 @@ from tool_base import (
 # 创建全局 SkillLoader 实例
 SKILLS = SkillLoader(SKILLS_DIR)
 # 创建全局 BackgroundManager 实例
-BACKGROUND_MANAGER = BackgroundManager()
+# BACKGROUND_MANAGER = BackgroundManager()
 # 创建全局 MessageBus 实例
 BUS = MessageBus(INBOX_DIR)
 # 创建全局 TeammateManager 实例
-TEAM = TeammateManager(TEAM_DIR)
+# TEAM = TeammateManager(TEAM_DIR)
 # 创建全局 MemoryStore 实例
 MEMORY = MemoryStore(MEMORY_DIR)
+
+# 创建全局 TaskManager 实例
+TASK_MANAGER = TaskManager()
+
 
 
 # ── TodoManager: 按 session 懒绑定的轻量级任务看板 ─────────────────
@@ -98,6 +103,15 @@ TOOL_HANDLERS = {
     "list_skills": lambda **kw: SKILLS.list_skills(),
     "write_memory":   lambda **kw: MEMORY.write(kw["name"], kw["type"], kw["description"], kw["body"]),
     "forget_memory":  lambda **kw: MEMORY.forget(kw["name"]),
+    "create_task": lambda **kw: TASK_MANAGER.run_create_task(
+        subject=kw["subject"],
+        description=kw.get("description", ""),
+        blockedBy=kw.get("blockedBy"),
+    ),
+    "list_tasks": lambda **kw: TASK_MANAGER.run_list_tasks(),
+    "get_task": lambda **kw: TASK_MANAGER.run_get_task(kw["task_id"]),
+    "claim_task": lambda **kw: TASK_MANAGER.run_claim_task(kw["task_id"]),
+    "complete_task": lambda **kw: TASK_MANAGER.run_complete_task(kw["task_id"]),
 }
 
 # ============================================================
@@ -151,6 +165,45 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string", "description": "Name of the memory to delete (slug or filename)"}
         }, "required": ["name"]}
+    }},
+    # ── [改动 3] 新增：任务管理工具 ──────────────────────────────
+    {"type": "function", "function": {
+        "name": "create_task",
+        "description": "Create a new task with optional blockedBy dependencies.",
+        "parameters": {"type": "object",
+                       "properties": {
+                           "subject": {"type": "string"},
+                           "description": {"type": "string"},
+                           "blockedBy": {"type": "array",
+                                         "items": {"type": "string"}}},
+                       "required": ["subject"]}
+    }},
+    {"type": "function", "function": {
+        "name": "list_tasks",
+        "description": "List all tasks with status, owner, and dependencies.",
+        "parameters": {"type": "object", "properties": {},
+                       "required": []}
+    }},
+    {"type": "function", "function": {
+        "name": "get_task",
+        "description": "Get full details of a specific task by ID.",
+        "parameters": {"type": "object",
+                       "properties": {"task_id": {"type": "string"}},
+                       "required": ["task_id"]}
+    }},
+    {"type": "function", "function": {
+        "name": "claim_task",
+        "description": "Claim a pending task. Sets owner, changes status to in_progress.",
+        "parameters": {"type": "object",
+                       "properties": {"task_id": {"type": "string"}},
+                       "required": ["task_id"]}
+    }},
+    {"type": "function", "function": {
+        "name": "complete_task",
+        "description": "Complete an in-progress task. Reports unblocked downstream tasks.",
+        "parameters": {"type": "object",
+                       "properties": {"task_id": {"type": "string"}},
+                       "required": ["task_id"]}
     }},
 ]
 
