@@ -191,7 +191,7 @@ learn-claude-code-main/
 3. **并发** —— 同一轮内 `parallel=true` 的工具用 `ThreadPoolExecutor` 并行跑，串行的按顺序。
 4. **后台任务** —— `background_manager.py` 起线程跑长命令，结果通过通知队列在下轮注入。
 5. **任务看板** —— `task_manager.py` 文件式 + 依赖图（`blockedBy` / `blocks`）。
-6. **TodoWrite** —— `todo_manager.py` 短清单 + nag 提醒。
+6. **TodoWrite** —— `todo_manager.py` 短清单 + nag 提醒；todo 文件与 session 绑定（`.todo/session_<N>.todo.json` ↔ `.chathistory/session_<N>.jsonl`），会话恢复/切换时自动注入 `<system-reminder>` 提醒模型继续未完成任务。详见下方"踩坑记录 → Todo 与 session 绑定 + 崩溃恢复"。
 7. **Skill 加载** —— `skills.py` 按需把 SKILL.md 注入 `tool_result`。
 8. **上下文压缩** —— `compact.py` 三层策略：micro 清理旧 tool_result / auto LLM 总结 / 阈值触发。
 9. **子智能体** —— `subagent.py` 隔离上下文，按 `allowed_tools` 控制权限。
@@ -265,6 +265,42 @@ cd agents/anthropic_v2/web && npm install && npm run dev
 - **解法**：[`agents/session_manage.py::_sanitize_orphan_tool_calls`](./agents/session_manage.py#L187) 在加载时扫描，对每个带 `tool_calls` 的 `AIMessage` 校验紧随其后的 `ToolMessage` 是否覆盖了全部 `tool_call_id`，缺失则把该 `AIMessage` 以及后续错位的 `ToolMessage` 一起丢弃。
 - **为什么删而不是补**：被中断的 tool 实际执行结果未知，编造 `ToolMessage` content 等于喂给模型假数据，反而污染后续推理；删除是唯一安全选择。
 - **教训**：上策是从源头消灭——在 `_save_message` 层调整落盘顺序（先 `fsync` tool_result 再 commit ai_message，或 `os.replace` 原子写），让孤儿消息根本不产生。
+
+### Todo 与 session 绑定 + 崩溃恢复
+
+相比 v1 教程的 `TodoManager`（`agents/anthropic/s03_todo_write.py` 里的纯内存版），v2 我做了**两处鲁棒性增强**：
+
+- todo **落盘** —— 写到 `WorkSpace/task1/.todo/session_<N>.todo.json`，`TodoManager.__init__` 立刻 `load()`，进程崩溃后内存里的 todo 仍是上次状态
+- todo **与 session 绑定** —— 不再是全局单文件，而是和 `.chathistory/session_<N>.jsonl` 用同一个 N 串起来，切换 session 时 `set_todo_manager(N)` 重新指向对应文件，不同会话的 todo 完全隔离
+- 启动恢复 **reminder** —— 仅落盘还不够，system prompt 不会渲染 todo，模型不主动调工具就察觉不到。所以 `agent_full_v2.py::_inject_todo_reminder` 在 `init_session` 和 `/switchsession N` 之后，若 `has_open_items()` 为真就注入一条 `role: user` 的 `<system-reminder>` 消息，把当前 todo 列表贴进去，模型下一轮必看到
+
+**关键坑位**（修复前）：
+
+- `TODO_FILE = TODO_DIR / "todo.json"` 是全局路径，session 切换时 todo 不跟着切，session_1 写的 todo 在 session_2 也能看到
+- 进程崩溃后 todo 确实能 reload 进内存（`TodoManager.__init__` → `self.load()`），但模型**意识不到**有未完成项——因为 system prompt 只写"如何使用 todo 工具"的规范，不展示当前 todo 列表，模型如果不主动调 `todo` 或 `/tasks`，完全感受不到
+- `/clearsession` 只清 chat history，**忘了**清 todo，会话清空后旧 todo 还在
+
+**修改落点**：
+
+- [`agents/tool_base.py`](agents/tool_base.py) —— 删 `TODO_FILE` 常量，加 `todo_file_for_session(session_num)` 工厂 + `TODO_DIR.mkdir`
+- [`agents/tools.py`](agents/tools.py) —— 删全局 `TODO_MANAGER`，加 `_TODO_MANAGER_HOLDER` + `set_todo_manager` / `get_todo_manager`；`TOOL_HANDLERS["todo"]` 改为 `get_todo_manager().update(...)`
+- [`agents/agent_full_v2.py`](agents/agent_full_v2.py) —— 新增 `_inject_todo_reminder`；在 `init_session` / `/switchsession N` 后调用 `set_todo_manager` + reminder；`/clearsession` 同步 `update([], fresh_start=False)` 重置 todo；`agent_loop` 里 `TODO_MANAGER.xxx` 改 `get_todo_manager().xxx`
+
+**reminder 注入示例**：
+
+```text
+<system-reminder>本次会话检测到上次有未完成的待办事项：
+Todos (2/5 completed):
+  [x] #1: 从19篇论文中提取DRG成本管控相关指标
+  [x] #2: 设计指标体系框架（维度-二级指标-三级指标）
+  [>] #3: 撰写指标体系研究文档（含权重方法与评分标准）
+  [ ] #4: 校验数据
+  [ ] #5: 检查交付
+请在继续之前确认是否继续执行；如果任务已不再相关，请用 todo 工具把对应项标记为 completed，
+或开启新计划（fresh_start=true 整体替换）。</system-reminder>
+```
+
+**为什么 reminder 落盘** —— 注入 `history_messages` 的同时也写进 `session_file`，下次启动 reload 仍可见；否则下次重启模型又"失忆"。
 
 ---
 

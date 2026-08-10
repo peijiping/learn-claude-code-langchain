@@ -23,20 +23,19 @@ from tool_base import (
     BASE_TOOL_HANDLERS,
     ROOT_DIR,
     SKILLS_DIR,
-    TODO_FILE,
+    TODO_DIR,
     INBOX_DIR,
     TEAM_DIR,
     WORKDIR,
     CHAT_HISTORY_DIR,
     MEMORY_DIR,
+    todo_file_for_session,
 )
 
 
 
 # 创建全局 SkillLoader 实例
 SKILLS = SkillLoader(SKILLS_DIR)
-# 创建全局 TodoManager 实例
-TODO_MANAGER = TodoManager(TODO_FILE)
 # 创建全局 BackgroundManager 实例
 BACKGROUND_MANAGER = BackgroundManager()
 # 创建全局 MessageBus 实例
@@ -47,6 +46,45 @@ TEAM = TeammateManager(TEAM_DIR)
 MEMORY = MemoryStore(MEMORY_DIR)
 
 
+# ── TodoManager: 按 session 懒绑定的轻量级任务看板 ─────────────────
+# todo 文件与 chat history 一一绑定（session_<N>.todo.json ↔ session_<N>.jsonl）。
+# 不再做成模块级单例，而是用 holder 在切会话时重新指向对应文件。
+# 工具 handler 仍以 dict 形式集中管理，"todo" 通过 get_todo_manager() 取当前会话实例。
+_TODO_MANAGER_HOLDER: dict = {"current": None}
+
+
+def set_todo_manager(session_num: int) -> "TodoManager":
+    """
+    切换 TodoManager 到指定 session 编号对应的 todo 文件。
+
+    调用时机：
+    - 启动时 init_session 后
+    - /newsession、/switchsession N、/clearsession 后
+
+    每次调用都会重新构造 TodoManager（构造时即从磁盘 load），
+    这样上一个会话的内存状态与新会话完全隔离。
+    """
+    TODO_DIR.mkdir(parents=True, exist_ok=True)
+    todo_file = todo_file_for_session(session_num)
+    _TODO_MANAGER_HOLDER["current"] = TodoManager(todo_file)
+    return _TODO_MANAGER_HOLDER["current"]
+
+
+def get_todo_manager() -> "TodoManager":
+    """
+    获取当前会话的 TodoManager。
+
+    未初始化（set_todo_manager 从未被调用）时抛错，提示调用方先去初始化。
+    """
+    mgr = _TODO_MANAGER_HOLDER["current"]
+    if mgr is None:
+        raise RuntimeError(
+            "TodoManager 未初始化。请先调用 set_todo_manager(session_num) "
+            "或在启动后使用 init_session。"
+        )
+    return mgr
+
+
 # ============================================================
 # 工具处理器映射
 # ============================================================
@@ -55,7 +93,7 @@ MEMORY = MemoryStore(MEMORY_DIR)
 # 当大模型返回工具调用请求时，根据工具名找到对应的函数来执行
 TOOL_HANDLERS = {
     **BASE_TOOL_HANDLERS,
-    "todo":        lambda **kw: TODO_MANAGER.update(kw["items"], kw.get("fresh_start", False)),
+    "todo":        lambda **kw: get_todo_manager().update(kw["items"], kw.get("fresh_start", False)),
     "load_skill":  lambda **kw: SKILLS.load_skill(kw["name"]),
     "list_skills": lambda **kw: SKILLS.list_skills(),
     "write_memory":   lambda **kw: MEMORY.write(kw["name"], kw["type"], kw["description"], kw["body"]),

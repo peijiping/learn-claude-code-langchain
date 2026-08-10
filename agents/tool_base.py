@@ -24,9 +24,10 @@ SKILLS_DIR = ROOT_DIR / "skills"
 
 # 工作目录
 WORKDIR = ROOT_DIR / "WorkSpace/task1"
-# 待办目录与文件
+# 待办目录（与每个 session 绑定的轻量级任务看板）
 TODO_DIR = WORKDIR / ".todo"
-TODO_FILE = TODO_DIR / "todo.json"
+# 待办文件命名随 session 变化，不再用全局 TODO_FILE 常量
+# 路径生成见 todo_file_for_session()
 # 团队目录
 TEAM_DIR = WORKDIR / ".team"
 # 收件箱目录
@@ -49,6 +50,20 @@ MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 
 
 CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+TODO_DIR.mkdir(parents=True, exist_ok=True)
+
+
+
+def todo_file_for_session(session_num: int) -> Path:
+    """
+    返回指定 session 编号对应的 todo 文件路径。
+
+    todo 是会话内轻量级任务看板，与 chat history 一一绑定：
+    每个 session 有独立 todo 文件，会话切换时同步切换。
+
+    文件命名：.todo/session_<N>.todo.json（与 .chathistory/session_<N>.jsonl 同 N）。
+    """
+    return TODO_DIR / f"session_{session_num}.todo.json"
 
 
 
