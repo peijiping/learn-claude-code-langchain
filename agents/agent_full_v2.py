@@ -11,6 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from session_manage import SessionManager
 from subagent import SubAgent
+from background_manager import BackgroundManager
 from tools import (
     BASE_TOOL,
     MAIN_AGENT_TOOLS,
@@ -61,9 +62,14 @@ llm_client = LLMClient().llm
 hook_system = HookSystem()
 hook_system.register_default_hooks()
 # 加载技能
-SKILLS = SkillLoader(SKILLS_DIR)
+Skills = SkillLoader(SKILLS_DIR)
 # 子智能体单实例：复用工具集/处理器/hooks，避免每次 sub_agent 调用都重新实例化
-SUB_AGENT_RUNNER = SubAgent(BASE_TOOL, TOOL_HANDLERS, hook_system)
+subagent_runner = SubAgent(BASE_TOOL, TOOL_HANDLERS, hook_system)
+# 后台任务管理器
+background_manager = BackgroundManager()
+
+
+
 
 # S11 错误恢复控制器：429/503 重试、max_tokens 截断恢复、prompt 超长压缩
 recovery = ErrorRecovery(primary_model=MODEL, fallback_model=FALLBACK_MODEL)
@@ -74,29 +80,78 @@ MAX_AGENT_ITERATIONS = 100
 
 
 
-def _execute_tool_call(tool_call: dict) -> dict:
-    """执行单个工具调用（sub_agent 或普通工具），返回结果字典"""
+def _make_executor(tool_name: str, tool_args: dict):
+    """
+    把"执行一个工具调用"包成无参闭包，供 background_manager 在后台线程调用。
+
+    嵌套函数（_make_executor 的形参是独立作用域）保证每次返回的闭包
+    都捕获当时的 tool_name / tool_args，避免 Python for 循环闭包共享变量
+    导致所有闭包都引用最后一次迭代值的经典坑。
+    """
+    if tool_name == "sub_agent":
+        allowed_tools = tool_args.get("allowed_tools")
+        prompt = tool_args.get("prompt", "")
+
+        def _exec():
+            return subagent_runner.spawn_subagent(prompt, allowed_tools=allowed_tools)
+        return _exec
+    elif tool_name in TOOL_HANDLERS:
+        handler = TOOL_HANDLERS[tool_name]
+
+        def _exec():
+            return handler(**tool_args)
+        return _exec
+    else:
+        def _exec():
+            return f"Error: Unknown tool {tool_name}"
+        return _exec
+
+
+def _execute_tool_call(tool_call) -> dict:
+    """
+    执行单个工具调用（sub_agent 或普通工具），同步或后台均可。
+
+    同步路径：直接调用 executor()，返回真实输出。
+    后台路径：分发给 background_manager 守护线程，立即返回占位
+    "[Background task bg_xxxx started] Command: ..." 字符串作为
+    本轮的 tool_result。占位 result 必须立即写进 history，
+    否则下一轮 LLM 会因 tool_call_id 缺失而报错。
+    """
     tool_name = tool_call.function.name
     # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能 ** 解包
     raw_args = tool_call.function.arguments
     tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
     tool_id = tool_call.id
 
-
-    if tool_name == "sub_agent":
-        allowed_tools = tool_args.get("allowed_tools")
-        print(f">> sub_agent ({tool_args.get('description', '')}): {tool_args['prompt'][:80]}")
-        tool_output = SUB_AGENT_RUNNER.spawn_subagent(
-            tool_args["prompt"], allowed_tools=allowed_tools
+    # 判定是否走后台：模型显式 run_in_background=True 优先，否则启发式
+    if background_manager.should_run_background(tool_name, tool_args):
+        executor = _make_executor(tool_name, tool_args)
+        bg_id = background_manager.start_background_task(
+            tool_name, tool_args, tool_id, executor
         )
-        print(f">> sub_agent 执行结果: {tool_output[:200]}...")
-    elif tool_name in TOOL_HANDLERS:
-        print(f">> 工具 {tool_name}({tool_args})")
-        tool_output = TOOL_HANDLERS[tool_name](**tool_args)
-        print(f">> 工具 {tool_name} 执行结果: {tool_output}")
+        cmd_text = (
+            tool_args.get("command")
+            or (tool_args.get("prompt", "")[:80] if tool_args.get("prompt") else "")
+            or tool_name
+        )
+        tool_output = (
+            f"[Background task {bg_id} started] "
+            f"Command: {cmd_text}. "
+            f"Result will be available when complete."
+        )
+        print(f">> {tool_name} 后台分发: {bg_id}")
     else:
-        tool_output = f"Error: Unknown tool {tool_name}"
-        print(f">> 工具 {tool_name} 执行结果: {tool_output}")
+        # 同步路径：直接走原逻辑
+        executor = _make_executor(tool_name, tool_args)
+        if tool_name == "sub_agent":
+            print(f">> sub_agent ({tool_args.get('description', '')}): {tool_args.get('prompt', '')[:80]}")
+        else:
+            print(f">> 工具 {tool_name}({tool_args})")
+        tool_output = executor()
+        if tool_name == "sub_agent":
+            print(f">> sub_agent 执行结果: {str(tool_output)[:200]}...")
+        else:
+            print(f">> 工具 {tool_name} 执行结果: {tool_output}")
     print("-" * 20)
 
     return {
@@ -104,7 +159,7 @@ def _execute_tool_call(tool_call: dict) -> dict:
         "tool_name": tool_name,
         "tool_args": tool_args,
         "tool_call_id": tool_id,
-        "content": tool_output,
+        "content": str(tool_output),
     }
 
 
@@ -255,6 +310,23 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             tool_msg = {"role": "tool", "content": content, "tool_call_id": tc.id}
             history_messages.append(tool_msg)
             session_manager.append_message_to_session(session_file, tool_msg)
+
+        # 后台任务通知注入：本轮（或更早轮次）已完成的后台任务，
+        # 把它们的输出整理成 <task_notification> 文本块作为 user 消息追加。
+        # 与 s13 教程的"每轮都收集"语义一致：
+        # - daemon 线程可能在任何时刻完成 task，调用方随时可以拿到通知；
+        # - 同一结果只通知一次（collect_background_results 内部 pop）。
+        # 不要把通知合并进 tool message——tool 消息必须严格对应
+        # assistant.tool_calls 里的 tool_call_id，否则 LLM 会报参数错误。
+        bg_notifications = background_manager.collect_background_results()
+        if bg_notifications:
+            notification_msg = {
+                "role": "user",
+                "content": "\n".join(bg_notifications),
+            }
+            history_messages.append(notification_msg)
+            session_manager.append_message_to_session(session_file, notification_msg)
+            print(f"  \033[32m[inject] {len(bg_notifications)} background notification(s)\033[0m")
 
         # todo 更新追踪: 本轮用了 todo 就清零, 否则累加;
         # 连续 3 轮未更新且仍有 open items 时, 注入提醒作为本轮最后一条消息, 并清零避免重复打扰

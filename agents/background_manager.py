@@ -1,121 +1,133 @@
-import subprocess
+"""
+BackgroundManager —— 适配 OpenAI SDK 的后台任务管理器
+
+设计要点（与 Anthropic 教程版的差异）：
+1. 不再依赖 Anthropic 的 block 对象（block.name / block.input / block.id）。
+   - 改为接收 OpenAI 风格的 tool_call_id + 工具名 + 已解析的 tool_args
+2. 不再内置"按 block 路由到 TOOL_HANDLERS"的 execute_tool()。
+   - 改为接收一个 executor 闭包，由主循环把同步执行逻辑闭包进来。
+   - 这样 sub_agent / 普通工具 / 自定义逻辑全部走同一条后台路径。
+3. 占位 result 由调用方构造（教程原话模板），
+   background_manager 只负责"启动线程 + 收集通知"两件事。
+"""
 import threading
-import uuid
+from typing import Callable
 
 
-# -- BackgroundManager: 线程执行 + 通知队列 --
 class BackgroundManager:
     """
-    后台任务管理器，支持在独立线程中执行命令，
-    并通过通知队列在任务完成时传递结果。
+    后台任务管理器：守护线程执行 + 通知队列。
+
+    三个全局状态 + 一把锁：
+       _bg_counter        后台任务自增计数器，用于生成唯一 bg_id
+       background_tasks   生命周期字典：bg_id → {tool_call_id, command, status}
+       background_results 输出缓存：bg_id → 最终输出字符串
+       background_lock    线程锁：后台线程与主线程都会读写上述两个字典，
+                          必须加锁避免并发读写导致数据损坏 / 脏读
     """
 
     def __init__(self):
-        """
-        初始化后台任务管理器。
-        - tasks: 存储所有任务的状态信息，key 为 task_id
-        - _notification_queue: 存放已完成任务的通知队列，供主线程获取
-        - _lock: 线程锁，保护共享数据结构
-        """
-        self.tasks = {}  # task_id -> {status, result, command}
-        self._notification_queue = []  # completed task results
-        self._lock = threading.Lock()
+        self.bg_counter = 0
+        self.background_tasks: dict[str, dict] = {}   # bg_id → {tool_call_id, command, status}
+        self.background_results: dict[str, str] = {}   # bg_id → output
+        self.background_lock = threading.Lock()
 
-    def run(self, command: str) -> str:
-        """
-        启动一个后台线程来执行命令，立即返回 task_id。
+    # 兜底启发式：从命令文本里猜它是不是"慢操作"（预计超过 30 秒）。
+    # 规则很简单——只对 bash 生效，命令里出现 install / build / test /
+    # deploy / compile 等关键词就认为是慢操作。
+    # 关键词命中是"可能慢"，宁可多后台化也不阻塞主循环。
+    def is_slow_operation(self, tool_name: str, tool_input: dict) -> bool:
+        """Fallback heuristic: commands likely to take > 30s."""
+        if tool_name != "bash":
+            return False
+        cmd = tool_input.get("command", "").lower()
+        slow_keywords = ["install", "build", "test", "deploy", "compile",
+                         "docker build", "pip install", "npm install",
+                         "cargo build", "pytest", "make"]
+        return any(kw in cmd for kw in slow_keywords)
 
-        Args:
-            command: 要执行的 shell 命令
+    # 判断这个工具调用要不要进后台。
+    # 优先级：模型显式传了 run_in_background=True → 听模型的；
+    # 没传 → 退回启发式判断（is_slow_operation）。
+    # 这就是"模型显式意图优先、启发式兜底"的双保险设计。
+    def should_run_background(self, tool_name: str, tool_input: dict) -> bool:
+        """Model explicit request takes priority; fallback to heuristic."""
+        if tool_input.get("run_in_background"):
+            return True
+        return self.is_slow_operation(tool_name, tool_input)
 
-        Returns:
-            包含 task_id 和命令信息的字符串
-        """
-        # 生成一个短 UUID 作为任务 ID
-        task_id = str(uuid.uuid4())[:8]
-        # 初始化任务状态为 running
-        self.tasks[task_id] = {"status": "running", "result": None, "command": command}
-        # 创建守护线程，在后台执行 _execute 方法
-        thread = threading.Thread(
-            target=self._execute, args=(task_id, command), daemon=True
+    # 把工具调用放到守护线程里异步执行，立即返回后台任务 ID。
+    # 流程：
+    #   1) 计数器 +1，生成 bg_id（如 bg_0001）；
+    #   2) 先在 background_tasks 里登记状态为 running（此时拿到锁）；
+    #   3) 启动 daemon 线程执行 worker：executor() 跑完后，
+    #      加锁把状态改成 completed 并把输出写进 background_results；
+    #      executor 抛异常时把异常字符串也当作结果写入，避免通知里丢失信息。
+    #   4) 主线程不等待，直接返回 bg_id。
+    # daemon=True 的意义：主程序退出时后台线程自动结束，不会残留线程挂住进程。
+    def start_background_task(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        tool_call_id: str,
+        executor: Callable[[], str],
+    ) -> str:
+        """Run executor in a daemon thread. Returns background task ID."""
+        self.bg_counter += 1
+        bg_id = f"bg_{self.bg_counter:04d}"
+        # 显示文本：bash 取 command；sub_agent 取 prompt 前 80 字；其他用工具名
+        cmd = (
+            tool_args.get("command")
+            or (tool_args.get("prompt", "")[:80] if tool_args.get("prompt") else "")
+            or tool_name
         )
+
+        def worker():
+            try:
+                result = executor()
+                if not isinstance(result, str):
+                    result = str(result)
+            except Exception as e:
+                result = f"Error: {type(e).__name__}: {e}"
+            with self.background_lock:
+                self.background_tasks[bg_id]["status"] = "completed"
+                self.background_results[bg_id] = result
+
+        with self.background_lock:
+            self.background_tasks[bg_id] = {
+                "tool_call_id": tool_call_id,
+                "command": cmd,
+                "status": "running",
+            }
+        thread = threading.Thread(target=worker, daemon=True)
         thread.start()
-        return f"Background task {task_id} started: {command[:80]}"
+        print(f"  \033[33m[background] dispatched {bg_id}: {cmd[:40]}\033[0m")
+        return bg_id
 
-    def _execute(self, task_id: str, command: str):
-        """
-        线程执行目标函数：运行子进程，捕获输出，结果放入通知队列。
-
-        Args:
-            task_id: 任务唯一标识符
-            command: 要执行的 shell 命令
-        """
-        try:
-            # 执行命令，设置工作目录、超时时间和输出捕获
-            r = subprocess.run(
-                command, shell=True, cwd=WORKDIR,
-                capture_output=True, text=True, timeout=300
-            )
-            # 合并标准输出和标准错误，最多保留 50000 字符
-            output = (r.stdout + r.stderr).strip()[:50000]
-            status = "completed"
-        except subprocess.TimeoutExpired:
-            # 命令执行超时（300秒）
-            output = "Error: Timeout (300s)"
-            status = "timeout"
-        except Exception as e:
-            # 其他执行异常
-            output = f"Error: {e}"
-            status = "error"
-
-        # 更新任务状态和结果
-        self.tasks[task_id]["status"] = status
-        self.tasks[task_id]["result"] = output or "(no output)"
-
-        # 将完成通知放入队列（带线程锁保护）
-        with self._lock:
-            self._notification_queue.append({
-                "task_id": task_id,
-                "status": status,
-                "command": command[:80],
-                "result": (output or "(no output)")[:500],
-            })
-
-    def check(self, task_id: str = None) -> str:
-        """
-        查询任务状态。
-
-        Args:
-            task_id: 要查询的任务 ID，如果为 None 则列出所有任务
-
-        Returns:
-            任务状态信息字符串
-        """
-        if task_id:
-            # 查询指定任务
-            t = self.tasks.get(task_id)
-            if not t:
-                return f"Error: Unknown task {task_id}"
-            return f"[{t['status']}] {t['command'][:60]}\n{t.get('result') or '(running)'}"
-        else:
-            # 列出所有任务
-            lines = []
-            for tid, t in self.tasks.items():
-                lines.append(f"{tid}: [{t['status']}] {t['command'][:60]}")
-            return "\n".join(lines) if lines else "No background tasks."
-
-    def drain_notifications(self) -> list:
-        """
-        取出并清空所有待处理的通知。
-
-        Returns:
-            所有已完成任务的通知列表
-
-        Note:
-            此方法在每次 LLM 调用前被调用，以确保将后台任务的结果
-            注入到 agent 的上下文中，实现"即发即忘"模式。
-        """
-        with self._lock:
-            notifs = list(self._notification_queue)
-            self._notification_queue.clear()
-        return notifs
+    # 收集所有已完成的后台任务，生成 <task_notification> 通知列表。
+    # 注意这里用 pop（取出即删除）：同一结果只通知一次，避免下轮重复注入。
+    # 输出截断到 200 字符作为 summary，防止通知文本过大占用上下文。
+    # <task_notification> 是独立消息格式（普通 text 块），而非复用 tool_result——
+    # 因为 tool_result 必须对应具体 tool_call_id，而后台任务的结果与原始
+    # tool_use 早已"分离"了。
+    def collect_background_results(self) -> list[str]:
+        """Collect completed background results as task_notification messages."""
+        with self.background_lock:
+            ready_ids = [bid for bid, task in self.background_tasks.items()
+                         if task["status"] == "completed"]
+        notifications = []
+        for bg_id in ready_ids:
+            with self.background_lock:
+                task = self.background_tasks.pop(bg_id)
+                output = self.background_results.pop(bg_id, "")
+            summary = output[:200] if len(output) > 200 else output
+            notifications.append(
+                f"<task_notification>\n"
+                f"  <task_id>{bg_id}</task_id>\n"
+                f"  <status>completed</status>\n"
+                f"  <command>{task['command']}</command>\n"
+                f"  <summary>{summary}</summary>\n"
+                f"</task_notification>")
+            print(f"  \033[32m[background done] {bg_id}: "
+                  f"{task['command'][:40]} ({len(output)} chars)\033[0m")
+        return notifications

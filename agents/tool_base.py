@@ -347,7 +347,12 @@ BASE_TOOL = [
         "type": "function",
         "function": {
             "name": "bash", "description": "执行 shell 命令。",
-            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+            "parameters": {"type": "object", "properties": {
+                "command": {"type": "string"},
+                "run_in_background": {"type": "boolean", "default": False,
+                    "description": "True 时把命令丢到后台线程异步执行，立即返回任务 ID；"
+                                   "不传则按启发式（install/build/test 等关键词）兜底判断。"}
+            }, "required": ["command"]}
         }
     },
     {

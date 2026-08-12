@@ -214,14 +214,17 @@ MAIN_AGENT_TOOLS = [
     *TOOLS,
     {"type": "function", "function": {
         "name": "sub_agent",
-        "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有执行工具权限，但不包含 task 系列工具；任务看板只由主智能体维护。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下所有 PDF 的标题和摘要\", parallel=\"true\")\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")",
+        "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有执行工具权限，但不包含 task 系列工具；任务看板只由主智能体维护。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率。串行时设为 false。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\nrun_in_background=True 时把子任务丢到后台线程异步执行，立即返回任务 ID；不传则同步等待子任务完成。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下所有 PDF 的标题和摘要\", parallel=\"true\")\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")\n- sub_agent(prompt=\"跑全量测试并报告失败用例\", parallel=\"false\", run_in_background=true)",
         "parameters": {
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "给子智能体的任务描述，应具体说明要做什么"},
                 "description": {"type": "string", "description": "任务的简短描述，用于日志记录"},
                 "allowed_tools": {"type": "array", "items": {"type": "string"}, "description": "限制子智能体可用的工具名称列表。不设置则默认使用全部工具。例如 [\"bash\",\"read_file\",\"read_pdf\"] 限制为只读工具集"},
-                "parallel": {"type": "boolean", "description": "是否与其他 sub_agent 并行执行。"}
+                "parallel": {"type": "boolean", "description": "是否与其他 sub_agent 并行执行。"},
+                "run_in_background": {"type": "boolean", "default": False,
+                    "description": "True 时把子任务丢到后台线程异步执行，立即返回后台任务 ID；"
+                                   "结果通过 <task_notification> 在后续轮次通知。"}
             },
             "required": ["prompt", "parallel"]
         }
