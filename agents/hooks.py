@@ -176,13 +176,13 @@ class HookSystem:
             # 1a) 硬黑名单:出现即拒绝,无需交互
             for pattern in self.deny_list:
                 if pattern in tool_args.get("command", ""):
-                    print(f"\n\033[31m⛔ Blocked: '{pattern}'\033[0m")
+                    print(f"\n\033[2;95m⛔ Blocked: '{pattern}'\033[0m")
                     return "Permission denied by deny list"
             # 1b) 软危险:弹窗让用户决定,默认 N 即拒绝
             for kw in self.destructive:
                 if kw in tool_args.get("command", ""):
-                    print(f"\n\033[33m⚠  Potentially destructive command\033[0m")
-                    print(f"   Tool: {tool_name}({tool_args})")
+                    print(f"\n\033[2;95m⚠  Potentially destructive command\033[0m")
+                    print(f"\033[2;95m   Tool: {tool_name}({tool_args})\033[0m")
                     choice = input("   Allow? [y/N] ").strip().lower()
                     if choice not in ("y", "yes"):
                         return "Permission denied by user"
@@ -193,8 +193,8 @@ class HookSystem:
             # 最后用 is_relative_to 校验解析后的绝对路径是否仍在 WORKDIR 内。
             path = tool_args.get("path", "")
             if not (WORKDIR / path).resolve().is_relative_to(WORKDIR):
-                print(f"\n\033[33m⚠  Writing outside workspace\033[0m")
-                print(f"   Tool: {tool_name}({tool_args})")
+                print(f"\n\033[2;95m⚠  Writing outside workspace\033[0m")
+                print(f"\033[2;95m   Tool: {tool_name}({tool_args})\033[0m")
                 choice = input("   Allow? [y/N] ").strip().lower()
                 if choice not in ("y", "yes"):
                     return "Permission denied by user"
@@ -223,7 +223,7 @@ class HookSystem:
         # 取 args 字典的前两个值,转为字符串后截断至 60 字符,
         # 避免长参数 (如大段代码、巨型文件) 把终端刷屏。
         args_preview = str(list(tool_args)[:2])[:60]
-        print(f"\033[90m[HOOK] {tool_name}({args_preview})\033[0m")
+        # print(f"\033[2;95m[HOOK] {tool_name}({args_preview})\033[0m")
         return None
 
     def large_output_hook(self, tool_call: dict, output: str):
@@ -241,7 +241,7 @@ class HookSystem:
             None (仅告警,不阻断)。
         """
         if len(str(output)) > 100000:
-            print(f"\033[33m[HOOK] ⚠ Large output from {tool_call['name']}: "
+            print(f"\033[2;95m[HOOK] ⚠ Large output from {tool_call['name']}: "
                   f"{len(str(output))} chars\033[0m")
         return None
 
@@ -261,7 +261,7 @@ class HookSystem:
         返回:
             None (不修改 query,只打印日志)。
         """
-        print(f"\033[90m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
+        print(f"\033[2;95m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
         return None
 
     def summary_hook(self, messages: list):
@@ -294,7 +294,7 @@ class HookSystem:
                     for b in content:
                         if isinstance(b, dict) and b.get("role") == "tool":
                             tool_count += 1
-        print(f"\033[90m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
+        print(f"\033[2;95m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
         return None
 
     # ═════════════════════════════════════════════════════════════════════

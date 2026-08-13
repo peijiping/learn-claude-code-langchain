@@ -29,6 +29,7 @@ from system_prompt import SystemPromptBuilder
 from error_recovery import ErrorRecovery, RecoveryAction
 # from check_permission import check_permission
 from hooks import HookSystem
+from utils import truncate_chars
 
 try:
     import readline  # 导入 GNU readline 库，用于增强命令行输入功能
@@ -143,16 +144,16 @@ def _execute_tool_call(tool_call) -> dict:
     else:
         # 同步路径：直接走原逻辑
         executor = _make_executor(tool_name, tool_args)
-        if tool_name == "sub_agent":
-            print(f">> sub_agent ({tool_args.get('description', '')}): {tool_args.get('prompt', '')[:80]}")
-        else:
-            print(f">> 工具 {tool_name}({tool_args})")
+        # if tool_name == "sub_agent":
+        #     print(f">> sub_agent ({tool_args.get('description', '')}): {tool_args.get('prompt', '')[:80]}")
+        # else:
+        #     print(f">> 工具 {tool_name}({tool_args})")
         tool_output = executor()
-        if tool_name == "sub_agent":
-            print(f">> sub_agent 执行结果: {str(tool_output)[:200]}...")
-        else:
-            print(f">> 工具 {tool_name} 执行结果: {tool_output}")
-    print("-" * 20)
+        # if tool_name == "sub_agent":
+        #     print(f">> sub_agent 执行结果: {str(tool_output)[:200]}...")
+        # else:
+        #     print(f">> 工具 {tool_name} 执行结果: {tool_output}")
+    
 
     return {
         "role": "tool",
@@ -228,8 +229,9 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             # 提取大模型回复中的工具调用
             response_tool_calls = response_msg.tool_calls or []
             #打印大模型的思考和回复内容
-            print(f"[本轮思考] {response_msg.reasoning_content}")
-            print(f"[本轮回复] {response_msg.content}")
+            # ANSI: \033[2m=暗(细体)，\033[90m=灰色，\033[0m=重置
+            print(f"\033[2;90m[thinking]\n{truncate_chars(response_msg.reasoning_content, 300)}\n[/thinking]\033[0m")
+            print(f"[本轮回复]\n{response_msg.content}")
 
 
         except Exception as e:
@@ -270,9 +272,12 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
                 continue
             return
 
-        print(f"》》》》》》》》[本轮 tool_calls 数量] {len(response_tool_calls)}")
-        print(response_tool_calls)
-        print("*********")
+        # ANSI: \033[2m=暗(细体)，\033[93m=浅黄，\033[0m=重置（与上方灰色 [thinking] 区分）
+        print(f"\033[2;93m[本轮大模型tool_calls数量] {len(response_tool_calls)}\033[0m")
+        for tc in response_tool_calls:
+            # 单行打印超 200 字符截断，避免大参数（如大段代码/长路径）刷屏
+            print(f"\033[2;93m{truncate_chars(f"  - {tc.function.name}({tc.function.arguments})  #id={tc.id}\n ")}\033[0m")
+        print(f"\033[2;93m[本轮大模型工具调用结束,等待执行结果]\033[0m")
         # 所有工具调用都根据 parallel 参数分组，并行组用线程池执行，串行组按顺序执行
         tool_call_results = []
         used_todo = False
@@ -291,6 +296,8 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             
             # 执行工具调用或 sub_agent 调用
             tool_call_result = _execute_tool_call(tool_call)
+            # 打印工具调用结果（小字号+浅蓝；结果超 200 字符截断，避免刷屏）
+            print(f"\033[2;93m [工具执行结果]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m")
             tool_call_results.append(tool_call_result)
 
             # s04: post hook
@@ -336,6 +343,8 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             history_messages.append(reminder_msg)
             session_manager.append_message_to_session(session_file, reminder_msg)
             rounds_since_todo = 0
+    
+    print("\033[2;93m[****一个turn循环结束****]\n \033[0m\n")
 
 
 def main():
