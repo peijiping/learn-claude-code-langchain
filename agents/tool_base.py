@@ -351,7 +351,11 @@ BASE_TOOL = [
                 "command": {"type": "string"},
                 "run_in_background": {"type": "boolean", "default": False,
                     "description": "True 时把命令丢到后台线程异步执行，立即返回任务 ID；"
-                                   "不传则按启发式（install/build/test 等关键词）兜底判断。"}
+                                   "不传则按启发式（install/build/test 等关键词）兜底判断。"},
+                "parallel": {"type": "boolean", "default": False,
+                    "description": "True 时与同次响应中其他独立工具调用并行执行。"
+                                   "只对无副作用、无共享状态的命令声明（如多个独立查询、多个独立 ls/wc/grep）。"
+                                   "链式命令（cd && make）、修改状态的命令（rm/mv/install/build/test）不要传 True。"}
             }, "required": ["command"]}
         }
     },
@@ -359,7 +363,12 @@ BASE_TOOL = [
         "type": "function",
         "function": {
             "name": "run_read", "description": "读取文件内容。",
-            "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "limit": {"type": "integer"},
+                "parallel": {"type": "boolean", "default": False,
+                    "description": "True 时与同次响应中其他独立文件读取并行执行。多个互不依赖的 read 一起发可提速。"}
+            }, "required": ["path"]}
         }
     },
     {
@@ -369,7 +378,9 @@ BASE_TOOL = [
             "parameters": {"type": "object", "properties": {
                 "path": {"type": "string", "description": "PDF 文件路径"},
                 "max_pages": {"type": "integer", "description": "最大读取页数，默认5"},
-                "chars_per_page": {"type": "integer", "description": "每页最大字符数，默认3000"}
+                "chars_per_page": {"type": "integer", "description": "每页最大字符数，默认3000"},
+                "parallel": {"type": "boolean", "default": False,
+                    "description": "True 时与同次响应中其他独立 PDF 读取并行执行。批量读 PDF 时一起发可大幅提速。"}
             }, "required": ["path"]}
         }
     },
@@ -395,7 +406,11 @@ BASE_TOOL = [
         "type": "function",
         "function": {
             "name": "run_glob", "description": "使用 glob 模式匹配文件路径。",
-            "parameters": {"type": "object", "properties": {"pattern": {"type": "string", "description": "要匹配的文件路径模式"}}, "required": ["pattern"]}
+            "parameters": {"type": "object", "properties": {
+                "pattern": {"type": "string", "description": "要匹配的文件路径模式"},
+                "parallel": {"type": "boolean", "default": False,
+                    "description": "True 时与同次响应中其他独立 glob 搜索并行执行。多个互不依赖的 pattern 一起发可提速。"}
+            }, "required": ["pattern"]}
         }
     },
 ]

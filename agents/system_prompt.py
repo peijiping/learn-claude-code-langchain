@@ -92,7 +92,10 @@ class SystemPromptBuilder:
 **强制使用**（主对话不得直接执行）：读 ≥3 文件 / 读 PDF / 工具调用 ≥5 步 / 搜索或探索代码库。
 - 默认含执行工具但不含 todo/task；待办与任务工具只由主智能体维护
 - 只读场景设 `allowed_tools=["bash","read_file","read_pdf"]`
-- 多任务并行 `parallel=true`；前后依赖 `parallel=false`
+- 同 turn 内无依赖、想省时间 → `parallel=true`（线程池并发执行）
+- 同 turn 内有依赖、或谨慎起见 → `parallel=false`（按声明顺序串行）
+- 想拿 ID 后回头查 → `run_in_background=true`（后台守护线程, 立即返回 bg_id）
+- 互斥规则：`run_in_background=true` 的调用不参与并行/串行桶, 永远独立后台化
 
 # 待办与任务（两套并存，按任务特征自选）
 你拥有**轻量的 TodoWrite** 和**重型的 TaskCreate/Update/Get/List**。两套机制可共存，不要默认只用其中一套。

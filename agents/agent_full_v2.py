@@ -22,6 +22,7 @@ from tools import (
     SKILLS_DIR,
     set_todo_manager,
     get_todo_manager,
+    set_background_manager,
 )
 from skills import SkillLoader
 from llm_manage import LLMClient
@@ -68,6 +69,9 @@ Skills = SkillLoader(SKILLS_DIR)
 subagent_runner = SubAgent(BASE_TOOL, TOOL_HANDLERS, hook_system)
 # 后台任务管理器
 background_manager = BackgroundManager()
+# 挂到 tools 模块的 holder 上，让 check_background 工具的 handler 能拿到同一实例。
+# 必须在 TOOL_HANDLERS 实际被使用前完成（模块级赋值即生效）。
+set_background_manager(background_manager)
 
 
 
@@ -85,27 +89,19 @@ def _make_executor(tool_name: str, tool_args: dict):
     """
     把"执行一个工具调用"包成无参闭包，供 background_manager 在后台线程调用。
 
-    嵌套函数（_make_executor 的形参是独立作用域）保证每次返回的闭包
-    都捕获当时的 tool_name / tool_args，避免 Python for 循环闭包共享变量
-    导致所有闭包都引用最后一次迭代值的经典坑。
+    tool_name / tool_args 是 _make_executor 的形参（独立作用域、每次调用绑一次），
+    所以 lambda 直接闭包捕获即可，无须 def 嵌套，也不会出现 for 循环闭包共享
+    变量导致所有闭包都引用最后一次迭代值的经典坑。
     """
     if tool_name == "sub_agent":
-        allowed_tools = tool_args.get("allowed_tools")
-        prompt = tool_args.get("prompt", "")
-
-        def _exec():
-            return subagent_runner.spawn_subagent(prompt, allowed_tools=allowed_tools)
-        return _exec
+        return lambda: subagent_runner.spawn_subagent(
+            tool_args.get("prompt", ""),
+            allowed_tools=tool_args.get("allowed_tools"),
+        )
     elif tool_name in TOOL_HANDLERS:
-        handler = TOOL_HANDLERS[tool_name]
-
-        def _exec():
-            return handler(**tool_args)
-        return _exec
+        return lambda: TOOL_HANDLERS[tool_name](**tool_args)
     else:
-        def _exec():
-            return f"Error: Unknown tool {tool_name}"
-        return _exec
+        return lambda: f"Error: Unknown tool {tool_name}"
 
 
 def _execute_tool_call(tool_call) -> dict:
@@ -127,9 +123,7 @@ def _execute_tool_call(tool_call) -> dict:
     # 判定是否走后台：模型显式 run_in_background=True 优先，否则启发式
     if background_manager.should_run_background(tool_name, tool_args):
         executor = _make_executor(tool_name, tool_args)
-        bg_id = background_manager.start_background_task(
-            tool_name, tool_args, tool_id, executor
-        )
+        bg_id = background_manager.start_background_task(tool_name, tool_args, tool_id, executor)
         cmd_text = (
             tool_args.get("command")
             or (tool_args.get("prompt", "")[:80] if tool_args.get("prompt") else "")
@@ -188,6 +182,23 @@ def _inject_todo_reminder(history_messages: list, session_file: Path, session_ma
 
 #执行主体
 def agent_loop(history_messages: list, session_file: Path, session_manager: SessionManager):
+
+    # ── 后台任务通知预热（turn 起点，while 之外，只跑一次）────────────
+    # 上一 turn 退出时，turn 内最后那一轮迭代才会触发 line ~340 的
+    # collect_background_results()；如果上一 turn 在 LLM 不再返回 tool_call
+    # 时自然结束，那一帧可能没机会把"已完成的 bg"喂进来。
+    # 这段预热专门处理"新 turn 进来时，把之前已经完成、还没被消费过的
+    # 后台任务结果先注入上下文"，避免模型在新 turn 第一轮就误判
+    # "任务还在跑"而另起一个新任务重复劳动。
+    #
+    # 注意：必须放在 while 之外，只在 turn 起点跑一次；while 内部的
+    # 迭代间反馈仍由 line ~340 的 collect_background_results() 负责。
+    pre_notifs = background_manager.collect_background_results()
+    if pre_notifs:
+        pre_msg = {"role": "user", "content": "\n".join(pre_notifs)}
+        history_messages.append(pre_msg)
+        session_manager.append_message_to_session(session_file, pre_msg)
+        print(f"  \033[32m[inject pre-loop] {len(pre_notifs)} background notification(s)\033[0m")
 
     iteration = 0  # 循环迭代计数
     rounds_since_todo = 0  # 记录距离上次调用 todo 工具的轮数，用于 nag reminder
@@ -278,39 +289,91 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             # 单行打印超 200 字符截断，避免大参数（如大段代码/长路径）刷屏
             print(f"\033[2;93m{truncate_chars(f"  - {tc.function.name}({tc.function.arguments})  #id={tc.id}\n ")}\033[0m")
         print(f"\033[2;93m[本轮大模型工具调用结束,等待执行结果]\033[0m")
-        # 所有工具调用都根据 parallel 参数分组，并行组用线程池执行，串行组按顺序执行
-        tool_call_results = []
+        # 三阶段执行：后台 → 并行 → 串行, 互斥分桶。
+        #   后台桶: args.run_in_background=true, 立即分发给 background_manager 守护线程
+        #   并行桶: args.parallel=true (且非后台), 线程池并发, 全部完成才走下一步
+        #   串行桶: args.parallel=false 或缺省 (且非后台), 按声明顺序逐个执行
+        # 结果用 {tool_call_id: result} 收集, 最后按 LLM 原始声明顺序回放到 history,
+        # 保证 tool 消息顺序与 tool_calls 顺序一致(OpenAI 协议硬约束)。
+        tool_call_results: dict[str, dict] = {}
         used_todo = False
-        # 目前先在循环中串行执行所有工具调用，大模型返回工具根据任务需要会一次返回多个或一个工具
+        background_calls, parallel_calls, serial_calls = [], [], []
         for tool_call in response_tool_calls:
             if tool_call.function.name == "todo":
                 used_todo = True
-            
-            # s04 change: hook，用钩子增加工具权限校验和日志记录，若不符合权限则阻塞执行
+            # 解析一次参数, 后面复用, 避免每阶段都重复 json.loads
+            raw_args = tool_call.function.arguments
+            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            tool_call._args_cache = tool_args
+            if tool_args.get("run_in_background"):
+                background_calls.append(tool_call)
+            elif tool_args.get("parallel"):
+                parallel_calls.append(tool_call)
+            else:
+                serial_calls.append(tool_call)
+
+        # 阶段 1: 后台分发——立即拿到 bg_id 占位 result, 不阻塞当前 turn
+        for tool_call in background_calls:
+            # s04: PreToolUse 钩子, 主线程触发(hook 大多是同步观察者, 不该跨线程)
             blocked = hook_system.trigger("PreToolUse", tool_call)
             if blocked:
-                #往消息中记录工具调用被阻塞的原因
-                tool_call_results.append({"role": "tool", "tool_call_id": tool_call.id,
-                                "content": str(blocked)})
+                tool_call_results[tool_call.id] = {
+                    "role": "tool", "tool_call_id": tool_call.id, "content": str(blocked)
+                }
                 continue
-            
-            # 执行工具调用或 sub_agent 调用
             tool_call_result = _execute_tool_call(tool_call)
-            # 打印工具调用结果（小字号+浅蓝；结果超 200 字符截断，避免刷屏）
-            print(f"\033[2;93m [工具执行结果]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m")
-            tool_call_results.append(tool_call_result)
+            print(f"\033[2;93m [工具执行结果(后台)]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m")
+            tool_call_results[tool_call.id] = tool_call_result
+            hook_system.trigger("PostToolUse", tool_call, tool_call_result)
 
-            # s04: post hook
-            hook_system.trigger("PostToolUse", tool_call, tool_call_result)  
+        # 阶段 2: 并行执行——parallel=true 且非后台, 线程池并发
+        if parallel_calls:
+            with ThreadPoolExecutor(max_workers=len(parallel_calls)) as executor:
+                # PreToolUse 在主线程顺序触发, 避免 hook 跨线程
+                futures: dict = {}
+                for tool_call in parallel_calls:
+                    blocked = hook_system.trigger("PreToolUse", tool_call)
+                    if blocked:
+                        tool_call_results[tool_call.id] = {
+                            "role": "tool", "tool_call_id": tool_call.id, "content": str(blocked)
+                        }
+                        continue
+                    fut = executor.submit(_execute_tool_call, tool_call)
+                    futures[fut] = tool_call
+                # 收集结果, as_completed 谁先完谁先回填; 异常兜底避免 tool_call_id 缺失
+                for fut in as_completed(futures):
+                    tc = futures[fut]
+                    try:
+                        tool_call_result = fut.result()
+                    except Exception as e:
+                        tool_call_result = {
+                            "role": "tool", "tool_call_id": tc.id,
+                            "content": f"Error: {type(e).__name__}: {e}",
+                        }
+                    print(f"\033[2;93m [工具执行结果(并行)]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m")
+                    tool_call_results[tc.id] = tool_call_result
+                    hook_system.trigger("PostToolUse", tc, tool_call_result)
 
-        # 并行执行 parallel=true 的工具,
-        # 目前先注释掉，不支持并行执行，因为当前的并行并未考虑到当同时返回多个工具时，多个工具有并行和顺序执行的执行顺序情况，目前仅为同时并行或同时串行。
+        # 阶段 3: 串行执行——按声明顺序, 一个一个来
+        for tool_call in serial_calls:
+            blocked = hook_system.trigger("PreToolUse", tool_call)
+            if blocked:
+                tool_call_results[tool_call.id] = {
+                    "role": "tool", "tool_call_id": tool_call.id, "content": str(blocked)
+                }
+                continue
+            tool_call_result = _execute_tool_call(tool_call)
+            print(f"\033[2;93m [工具执行结果(串行)]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m")
+            tool_call_results[tool_call.id] = tool_call_result
+            hook_system.trigger("PostToolUse", tool_call, tool_call_result)
 
-        # 串行执行下, tool_call_results 与 response_tool_calls 顺序一一对应, 直接 zip 组装 tool message
-        # 后续扩展: 并行执行 parallel=true 的工具, 需要根据工具的 parallel 参数, 分组执行, 并在每个组内按顺序执行, 保持与大模型回复的 tool_calls 顺序一致
-        for tc, result in zip(response_tool_calls, tool_call_results):
-            # result.content 约定是字符串; 兜底处理 handler 偷懒返回 dict 的情况,
-            # 避免二次 json.dumps 导致 session jsonl 出现双层嵌套
+        # 按 LLM 声明顺序回放 tool 消息(三桶结果合并, 严格保序)
+        for tc in response_tool_calls:
+            result = tool_call_results.get(tc.id)
+            if result is None:
+                # 极端兜底: hook 拦截或异常分支下, 万一没填, 写一条占位
+                result = {"role": "tool", "tool_call_id": tc.id,
+                          "content": f"Error: no result for {tc.id}"}
             content = result.get("content", "")
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)
