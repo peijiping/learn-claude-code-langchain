@@ -284,7 +284,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
             return
 
         # ANSI: \033[2m=暗(细体)，\033[93m=浅黄，\033[0m=重置（与上方灰色 [thinking] 区分）
-        print(f"\033[2;93m[本轮大模型tool_calls数量] {len(response_tool_calls)}\033[0m")
+        print(f"\033[2;93m[本轮大模型调用工具数量] {len(response_tool_calls)}\033[0m")
         for tc in response_tool_calls:
             # 单行打印超 200 字符截断，避免大参数（如大段代码/长路径）刷屏
             print(f"\033[2;93m{truncate_chars(f"  - {tc.function.name}({tc.function.arguments})  #id={tc.id}\n ")}\033[0m")
