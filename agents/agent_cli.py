@@ -11,6 +11,16 @@
   agent.init_session(resume=False)   # 新会话
   agent.run_turn("[Scheduled] ...") # 非交互单轮
 """
+import os
+from pathlib import Path
+
+# 锁定 cwd 到本仓库根目录：保证 paths.py 的 `ROOT_DIR = Path.cwd()` 始终解析到正确位置。
+# 必须放在所有 import 之前——agent_full_v2 → paths 的 import 链会在加载期立即执行
+# paths.py 顶层的 `ensure_dirs()`，那个时点 cwd 还不对就会在错误位置建出 .memory/ .chathistory/ 等子目录。
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if Path.cwd() != _PROJECT_ROOT:
+    os.chdir(_PROJECT_ROOT)
+
 from dotenv import load_dotenv
 from agent_full_v2 import Agent
 
