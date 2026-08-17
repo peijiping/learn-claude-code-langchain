@@ -12,18 +12,8 @@ from dotenv import load_dotenv
 from session_manage import SessionManager
 from subagent import SubAgent
 from background_manager import BackgroundManager
-from tools import (
-    BASE_TOOL,
-    MAIN_AGENT_TOOLS,
-    TOOL_HANDLERS,
-    WORKDIR,
-    # BACKGROUND_MANAGER,
-    CHAT_HISTORY_DIR,
-    SKILLS_DIR,
-    set_todo_manager,
-    get_todo_manager,
-    set_background_manager,
-)
+from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR
+from tools import TOOL_REGISTRY
 from skills import SkillLoader
 from llm_manage import LLMClient
 from system_prompt import SystemPromptBuilder
@@ -66,12 +56,12 @@ hook_system.register_default_hooks()
 # 加载技能
 Skills = SkillLoader(SKILLS_DIR)
 # 子智能体单实例：复用工具集/处理器/hooks，避免每次 sub_agent 调用都重新实例化
-subagent_runner = SubAgent(BASE_TOOL, TOOL_HANDLERS, hook_system)
+subagent_runner = SubAgent(TOOL_REGISTRY.base_tools, TOOL_REGISTRY.handlers, hook_system)
 # 后台任务管理器
 background_manager = BackgroundManager()
-# 挂到 tools 模块的 holder 上，让 check_background 工具的 handler 能拿到同一实例。
-# 必须在 TOOL_HANDLERS 实际被使用前完成（模块级赋值即生效）。
-set_background_manager(background_manager)
+# 挂到工具注册中心的 holder 上，让 check_background 工具的 handler 能拿到同一实例。
+# 必须在 TOOL_REGISTRY.handlers 实际被使用前完成（模块级赋值即生效）。
+TOOL_REGISTRY.set_background_manager(background_manager)
 
 
 
@@ -98,8 +88,8 @@ def _make_executor(tool_name: str, tool_args: dict):
             tool_args.get("prompt", ""),
             allowed_tools=tool_args.get("allowed_tools"),
         )
-    elif tool_name in TOOL_HANDLERS:
-        return lambda: TOOL_HANDLERS[tool_name](**tool_args)
+    elif tool_name in TOOL_REGISTRY.handlers:
+        return lambda: TOOL_REGISTRY.execute(tool_name, **tool_args)
     else:
         return lambda: f"Error: Unknown tool {tool_name}"
 
@@ -167,7 +157,7 @@ def _inject_todo_reminder(history_messages: list, session_file: Path, session_ma
     模型下一轮必能直接看到。reminder 同时落盘 session_file，
     保证下次启动 reload 仍可见。
     """
-    mgr = get_todo_manager()
+    mgr = TOOL_REGISTRY.get_todo_manager()
     if not mgr.has_open_items():
         return
     reminder = (
@@ -226,7 +216,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
                     model=mdl,
                     messages=history_messages,
                     max_tokens=mt,
-                    tools=MAIN_AGENT_TOOLS,
+                    tools=TOOL_REGISTRY.main_agent_tools,
                     tool_choice="auto", #工具选择，值域 none、auto、required，默认 auto
                     parallel_tool_calls=True, #是否并行执行工具调用，默认 False
                     stream=False, #是否流式输出，默认 False
@@ -401,7 +391,7 @@ def agent_loop(history_messages: list, session_file: Path, session_manager: Sess
         # todo 更新追踪: 本轮用了 todo 就清零, 否则累加;
         # 连续 3 轮未更新且仍有 open items 时, 注入提醒作为本轮最后一条消息, 并清零避免重复打扰
         rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
-        if rounds_since_todo >= 3 and get_todo_manager().has_open_items():
+        if rounds_since_todo >= 3 and TOOL_REGISTRY.get_todo_manager().has_open_items():
             reminder_msg = {"role": "user", "content": "<reminder>Update your tasks.</reminder>"}
             history_messages.append(reminder_msg)
             session_manager.append_message_to_session(session_file, reminder_msg)
@@ -417,7 +407,7 @@ def main():
     session_num, session_file, history_messages = session_manager.init_session()
     # todo 与 session 绑定：每次切会话都要重新指向对应的 todo 文件，
     # 并尝试注入未完成项 reminder（坑 ② 修复）
-    set_todo_manager(session_num)
+    TOOL_REGISTRY.set_todo_manager(session_num)
     _inject_todo_reminder(history_messages, session_file, session_manager)
     
     while True:
@@ -443,7 +433,7 @@ def main():
         if query.strip().lower() == "/newsession":
             session_num, session_file, history_messages = session_manager.create_initialized_session()
             # 新会话的 todo 文件尚不存在，set_todo_manager 会建出空列表；reminder 不会注入
-            set_todo_manager(session_num)
+            TOOL_REGISTRY.set_todo_manager(session_num)
             print(f"\033[33m已创建新会话: session_{session_num}.jsonl\033[0m")
             continue
 
@@ -452,7 +442,7 @@ def main():
                 target_num = int(query.strip().split()[1])
                 session_num, session_file, history_messages = session_manager.switch_session(target_num)
                 # 切到目标会话后，重新指向该 session 的 todo 文件并尝试注入 reminder
-                set_todo_manager(session_num)
+                TOOL_REGISTRY.set_todo_manager(session_num)
                 _inject_todo_reminder(history_messages, session_file, session_manager)
                 print(f"\033[33m已切换到会话: session_{session_num}.jsonl ({len(history_messages)} 条消息)\033[0m")
             except (ValueError, IndexError):
@@ -465,13 +455,13 @@ def main():
             deleted_count = session_manager.clear_session(session_file)
             # todo 与 chat history 同生共死：清空 chat 的同时把当前 session 的 todo 也重置为空
             # 直接调 update([]) 落空 JSON，保留文件结构便于 TodoManager.load 解析
-            get_todo_manager().update([], fresh_start=False)
+            TOOL_REGISTRY.get_todo_manager().update([], fresh_start=False)
             history_messages = session_manager.load_session_history(session_file)
             print(f"\033[33m已清空当前会话，删除了 {deleted_count} 条历史消息\033[0m")
             continue
         
         if query.strip() == "/tasks":
-            print(get_todo_manager().render())
+            print(TOOL_REGISTRY.get_todo_manager().render())
             continue
 
         if query.strip() == "/compact":

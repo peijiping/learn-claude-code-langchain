@@ -9,7 +9,7 @@ subagent.py - 通用型子智能体模块
 import os
 import json
 
-from tools import WORKDIR
+from paths import WORKDIR
 from hooks import HookSystem
 from llm_manage import LLMClient
 

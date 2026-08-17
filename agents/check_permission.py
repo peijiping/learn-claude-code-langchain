@@ -56,7 +56,7 @@ def check_deny_list(command: str) -> str | None:
     return None
 
 from pathlib import Path
-from tools import WORKDIR
+from paths import WORKDIR
 
 # ---------------------------------------------------------------------------
 # Gate 2：规则匹配（Rule Matching）

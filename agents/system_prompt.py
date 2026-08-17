@@ -6,7 +6,8 @@
 
 from pathlib import Path
 
-from tools import WORKDIR, SKILLS_DIR, MEMORY, CHAT_HISTORY_DIR, MAIN_AGENT_TOOLS
+from paths import WORKDIR, SKILLS_DIR, CHAT_HISTORY_DIR
+from tools import TOOL_REGISTRY
 from skills import SkillLoader
 
 
@@ -26,7 +27,7 @@ class SystemPromptBuilder:
         self,
         workdir: Path = WORKDIR,
         skills: SkillLoader = None,
-        memory=MEMORY,
+        memory=TOOL_REGISTRY.memory,
         chat_history_dir: Path = CHAT_HISTORY_DIR,
         workspace_instruction_files: tuple[str, ...] = None,
     ):
@@ -82,7 +83,7 @@ class SystemPromptBuilder:
         """工具与并发机制 + 待办 + 工作流规范段（始终加载）。"""
         tool_lines = "\n".join(
             f"- {t['function']['name']}（{t['function']['description'].splitlines()[0]}）"
-            for t in MAIN_AGENT_TOOLS
+            for t in TOOL_REGISTRY.main_agent_tools
         )
         return f"""# 工具与并发机制
 可用工具：

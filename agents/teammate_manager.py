@@ -25,11 +25,8 @@ from message_bus import MessageBus,VALID_MSG_TYPES
 import threading
 from pathlib import Path
 from llm_manage import LLMClient
-from tool_base import (
-    safe_path,
-    run_read,run_read_pdf, run_write, run_edit,run_glob,
-    WORKDIR,TEAM_DIR,INBOX_DIR,
-)
+from paths import WORKDIR, TEAM_DIR, INBOX_DIR
+from tools import TOOL_REGISTRY
 
 # -- TeammateManager: persistent named agents with config.json --
 class TeammateManager:
@@ -306,19 +303,19 @@ class TeammateManager:
         """
         # bash: 执行 Shell 命令
         if tool_name == "bash":
-            return run_bash(args["command"])
+            return TOOL_REGISTRY.run_bash(args["command"])
 
         # read_file: 读取文件内容
         if tool_name == "read_file":
-            return run_read(args["path"])
+            return TOOL_REGISTRY.run_read(args["path"])
 
         # write_file: 写入文件内容
         if tool_name == "write_file":
-            return run_write(args["path"], args["content"])
+            return TOOL_REGISTRY.run_write(args["path"], args["content"])
 
         # edit_file: 编辑文件（替换精确匹配的文本）
         if tool_name == "edit_file":
-            return run_edit(args["path"], args["old_text"], args["new_text"])
+            return TOOL_REGISTRY.run_edit(args["path"], args["old_text"], args["new_text"])
 
         # send_message: 发送消息给团队成员
         if tool_name == "send_message":

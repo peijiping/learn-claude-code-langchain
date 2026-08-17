@@ -30,7 +30,7 @@ from typing import Callable, Optional
 
 from llm_manage import LLMClient
 
-from tool_base import TRANSCRIPT_DIRNAME, TOOL_RESULTS_DIRNAME
+from paths import TRANSCRIPT_DIRNAME, TOOL_RESULTS_DIRNAME
 
 
 # ── 1. 配置常量（运行时可由 .env 覆盖） ──────────────────────────────

@@ -11,7 +11,7 @@ import time, random
 from pathlib import Path
 from dataclasses import dataclass, asdict
 
-from tool_base import TASKS_DIR
+from paths import TASKS_DIR
 
 
 @dataclass

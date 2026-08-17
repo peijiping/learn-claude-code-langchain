@@ -344,49 +344,91 @@ def collect_background_results() -> list[str]:
 
 
 # ── Cron Scheduler (s14 new) ──
+# ============================================================================
+# 本节实现 s14 课程的核心：定时任务（Cron）调度器。
+#
+# 整体采用「生产者-队列-消费者」三层解耦的架构：
+#   1. 调度线程（生产者）：cron_scheduler_loop，独立 daemon 线程
+#      - 每 1 秒轮询一次当前时间
+#      - 用 cron_matches 判断每个注册任务是否到期
+#      - 命中后将任务投入 cron_queue
+#   2. 任务队列（缓冲）：cron_queue，线程安全列表
+#      - 解耦调度与执行：调度线程不直接驱动 agent
+#      - 用 cron_lock 保护，跨线程访问
+#   3. 队列处理器（消费者）：queue_processor_loop，独立 daemon 线程
+#      - 监控 cron_queue 是否非空
+#      - 拿到 agent_lock 后调用 agent_loop 消费任务
+#      - 把任务 prompt 注入到 messages 列表
+#
+# 之所以要拆成调度线程 + 队列 + 队列处理器三块：
+#   - 调度线程不能直接执行 agent（agent_loop 是阻塞的，否则调度会卡住）
+#   - 不能让调度线程和用户输入「抢」agent，用队列串行化
+#   - 队列处理器用 agent_lock（不可重入 mutex）保证 agent_loop 同一时刻只跑一次
+# ============================================================================
 
+# 持久化路径：所有 durable=True 的任务会被序列化到该文件，重启后自动恢复
 DURABLE_PATH = WORKDIR / ".scheduled_tasks.json"
 
 
 @dataclass
 class CronJob:
+    # 任务唯一 ID，格式如 cron_123456（6 位随机数）
     id: str
+    # 5 段 cron 表达式："分 时 日 月 周"，例如 "0 9 * * *" 表示每天 9:00
     cron: str        # "0 9 * * *"
+    # 触发时注入到 agent 上下文的提示词（作为 user message 追加）
     prompt: str      # message to inject when fired
+    # True=周期性任务（命中后保留在 scheduled_jobs 中）
+    # False=一次性任务（命中后从 scheduled_jobs 中移除）
     recurring: bool  # True = recurring, False = one-shot
+    # True=持久化到 .scheduled_tasks.json，重启后仍生效
+    # False=仅本进程内有效，进程退出后丢失
     durable: bool    # True = persist to disk
 
 
+# 已注册任务表：job_id -> CronJob。所有跨线程访问都要拿 cron_lock
 scheduled_jobs: dict[str, CronJob] = {}
+# 触发队列：调度线程写入，agent_loop 消费。线程安全列表
 cron_queue: list[CronJob] = []
+# 保护 scheduled_jobs / cron_queue / _last_fired 的互斥锁
 cron_lock = threading.Lock()
+# 保护 agent_loop 串行化执行：同一时刻只能有一个 agent turn 在跑
+# - 用户输入主循环在持有它时调用 run_agent_turn_locked
+# - 队列处理器用 blocking=False 尝试获取，抢不到就跳过本次轮询
 agent_lock = threading.Lock()
+# 防重放记录：job_id -> "YYYY-MM-DD HH:MM"，同一分钟内不会重复触发同一任务
 _last_fired: dict[str, str] = {}  # job_id → "YYYY-MM-DD HH:MM"
 
 
 def _cron_field_matches(field: str, value: int) -> bool:
-    """Match a single cron field against a value."""
+    """匹配单个 cron 字段（如 "*/5" / "1,3,5" / "9-17" / "30"）与具体数值。"""
+    # 通配符：任意值都匹配
     if field == "*":
         return True
+    # 步长语法：*/n 表示每隔 n 命中一次（例如 */5 在分钟字段上 = 0,5,10,...,55）
     if field.startswith("*/"):
         step = int(field[2:])
         return step > 0 and value % step == 0
+    # 枚举语法：用逗号分隔多个子表达式（每个子表达式可递归匹配）
     if "," in field:
         return any(_cron_field_matches(f.strip(), value)
                    for f in field.split(","))
+    # 区间语法：a-b 表示闭区间 [a, b]
     if "-" in field:
         lo, hi = field.split("-", 1)
         return int(lo) <= value <= int(hi)
+    # 默认按精确值匹配
     return value == int(field)
 
 
 def cron_matches(cron_expr: str, dt: datetime) -> bool:
-    """Check if a 5-field cron expression matches the given datetime.
-    Standard cron semantics: DOM and DOW use OR when both are constrained."""
+    """判断 5 段 cron 表达式是否匹配给定时间。
+    采用标准 cron 语义：DOM（日）和 DOW（周）同时被约束时取「或」逻辑。"""
     fields = cron_expr.strip().split()
     if len(fields) != 5:
         return False
     minute, hour, dom, month, dow = fields
+    # Python 的 weekday() 是 Monday=0, cron 的 dow 是 Sunday=0，统一到 cron 习惯
     dow_val = (dt.weekday() + 1) % 7  # Python Monday=0 → cron Sunday=0
 
     m = _cron_field_matches(minute, dt.minute)
@@ -395,25 +437,29 @@ def cron_matches(cron_expr: str, dt: datetime) -> bool:
     month_ok = _cron_field_matches(month, dt.month)
     dow_ok = _cron_field_matches(dow, dow_val)
 
-    # Minute, hour, month must all match
+    # 分、时、月必须全部命中（这三者是「与」关系）
     if not (m and h and month_ok):
         return False
-    # DOM and DOW: if both constrained, either matching is enough (OR)
+    # DOM 和 DOW 特殊处理：两者都是「通配」则直接通过
     dom_unconstrained = dom == "*"
     dow_unconstrained = dow == "*"
     if dom_unconstrained and dow_unconstrained:
         return True
+    # 只约束 DOW（如 "0 9 * * 1"）：按星期匹配
     if dom_unconstrained:
         return dow_ok
+    # 只约束 DOM（如 "0 9 1 * *"）：按日期匹配
     if dow_unconstrained:
         return dom_ok
+    # 两者都约束（如 "0 9 1 * 1"）：DOM 或 DOW 命中其一即可（OR 语义）
     return dom_ok or dow_ok
 
 
 def _validate_cron_field(field: str, lo: int, hi: int) -> str | None:
-    """Validate a single cron field value is within [lo, hi]."""
+    """校验单个 cron 字段值是否落在 [lo, hi] 范围内，返回错误信息或 None。"""
     if field == "*":
         return None
+    # */n：步长必须为正整数
     if field.startswith("*/"):
         step_str = field[2:]
         if not step_str.isdigit():
@@ -422,11 +468,13 @@ def _validate_cron_field(field: str, lo: int, hi: int) -> str | None:
         if step <= 0:
             return f"Step must be > 0: {field}"
         return None
+    # a,b,c：逐段校验
     if "," in field:
         for part in field.split(","):
             err = _validate_cron_field(part.strip(), lo, hi)
             if err: return err
         return None
+    # a-b：闭区间，且要求 lo <= hi、端点都在合法范围内
     if "-" in field:
         parts = field.split("-", 1)
         if not parts[0].isdigit() or not parts[1].isdigit():
@@ -437,6 +485,7 @@ def _validate_cron_field(field: str, lo: int, hi: int) -> str | None:
         if a > b:
             return f"Range start > end: {field}"
         return None
+    # 单值：必须为合法范围内的整数
     if not field.isdigit():
         return f"Invalid field: {field}"
     val = int(field)
@@ -446,7 +495,8 @@ def _validate_cron_field(field: str, lo: int, hi: int) -> str | None:
 
 
 def validate_cron(cron_expr: str) -> str | None:
-    """Validate a cron expression. Returns error message or None."""
+    """校验完整 cron 表达式。各字段合法范围：
+        minute: 0-59, hour: 0-23, day-of-month: 1-31, month: 1-12, day-of-week: 0-6（周日=0）"""
     fields = cron_expr.strip().split()
     if len(fields) != 5:
         return f"Expected 5 fields, got {len(fields)}"
@@ -460,13 +510,15 @@ def validate_cron(cron_expr: str) -> str | None:
 
 
 def save_durable_jobs():
-    """Persist durable jobs to .scheduled_tasks.json."""
+    """把所有 durable=True 的任务持久化到 .scheduled_tasks.json。
+    session-only 的任务（durable=False）不会被保存。"""
     durable = [asdict(j) for j in scheduled_jobs.values() if j.durable]
     DURABLE_PATH.write_text(json.dumps(durable, indent=2))
 
 
 def load_durable_jobs():
-    """Load durable jobs from disk on startup."""
+    """进程启动时从 .scheduled_tasks.json 恢复任务。
+    恢复时再次用 validate_cron 校验，避免历史脏数据让调度线程崩溃。"""
     if not DURABLE_PATH.exists():
         return
     try:
@@ -487,7 +539,8 @@ def load_durable_jobs():
 
 def schedule_job(cron: str, prompt: str, recurring: bool = True,
                  durable: bool = True) -> CronJob | str:
-    """Register a new cron job. Returns CronJob or error string."""
+    """注册一条新的 cron 任务。成功返回 CronJob，失败返回错误字符串。"""
+    # 先校验表达式，校验失败直接返回错误，不修改任何状态
     err = validate_cron(cron)
     if err:
         return err
@@ -496,8 +549,10 @@ def schedule_job(cron: str, prompt: str, recurring: bool = True,
         cron=cron, prompt=prompt,
         recurring=recurring, durable=durable,
     )
+    # 写共享字典必须持锁，避免与调度线程的遍历产生竞争
     with cron_lock:
         scheduled_jobs[job.id] = job
+    # 持久化任务才需要立即落盘
     if durable:
         save_durable_jobs()
     print(f"  \033[35m[cron register] {job.id} '{cron}' → {prompt[:40]}\033[0m")
@@ -505,7 +560,7 @@ def schedule_job(cron: str, prompt: str, recurring: bool = True,
 
 
 def cancel_job(job_id: str) -> str:
-    """Cancel a cron job."""
+    """取消一条 cron 任务。若该任务是 durable 的，会同步从磁盘删除。"""
     with cron_lock:
         job = scheduled_jobs.pop(job_id, None)
     if not job:
@@ -517,23 +572,26 @@ def cancel_job(job_id: str) -> str:
 
 
 def cron_scheduler_loop():
-    """Independent daemon thread: poll every 1s, fire matching jobs.
-    Individual job errors are caught to prevent one bad job from
-    killing the entire scheduler thread."""
+    """调度线程主体（独立 daemon 线程）。
+    每 1 秒检查一次：遍历所有任务，时间匹配则入队。
+    try/except 包住单个任务的处理，保证「一个坏任务不能拖垮整个调度器」。"""
     while True:
         time.sleep(1)
         now = datetime.now()
-        # Date-aware marker prevents daily jobs from skipping on day 2+
+        # 用「年-月-日 时:分」作为去重 marker：
+        # 同一分钟内不会重复触发同一任务（解决「每分钟匹配」任务的重复入队问题）
         minute_marker = now.strftime("%Y-%m-%d %H:%M")
         with cron_lock:
-            for job in list(scheduled_jobs.values()):
+            for job in list(scheduled_jobs.values()):  # 用 list() 复制一份避免迭代中修改
                 try:
                     if cron_matches(job.cron, now):
+                        # 用 _last_fired 防止同一分钟内被重复入队
                         if _last_fired.get(job.id) != minute_marker:
                             cron_queue.append(job)
                             _last_fired[job.id] = minute_marker
                             print(f"  \033[35m[cron fire] {job.id} → "
                                   f"{job.prompt[:40]}\033[0m")
+                        # 一次性任务触发后立刻从注册表移除
                         if not job.recurring:
                             scheduled_jobs.pop(job.id, None)
                             if job.durable:
@@ -543,7 +601,8 @@ def cron_scheduler_loop():
 
 
 def consume_cron_queue() -> list[CronJob]:
-    """Consume fired jobs from cron_queue (called by agent_loop)."""
+    """消费者调用：一次性把队列里所有待处理任务取出并清空队列。
+    在 agent_loop 每轮迭代开头被调用，把 cron 任务作为 user message 注入。"""
     with cron_lock:
         fired = list(cron_queue)
         cron_queue.clear()
@@ -551,21 +610,30 @@ def consume_cron_queue() -> list[CronJob]:
 
 
 def has_cron_queue() -> bool:
-    """Return whether fired cron jobs are waiting to be delivered."""
+    """队列处理器调用：判断是否有待处理任务。
+    用来决定是否要唤醒 agent（避免无意义地争抢 agent_lock）。"""
     with cron_lock:
         return bool(cron_queue)
 
 
-# Load durable jobs on startup, then start scheduler thread
+# 进程启动序列（顺序很关键）：
+#   1) 先从 .scheduled_tasks.json 恢复历史 durable 任务
+#   2) 再启动调度线程（daemon=True：主进程退出时自动结束，无需手动 join）
+# 注意：必须先恢复任务再启动线程，否则启动瞬间的那 1 秒可能错过本应触发的任务
 load_durable_jobs()
 threading.Thread(target=cron_scheduler_loop, daemon=True).start()
 print("  \033[35m[cron] scheduler thread started\033[0m")
 
 
 # ── Cron Tools ──
+# 以下三个函数是「工具层」的薄包装：
+#   - 把 tool schema 里的强类型参数透传给底层 schedule_job / cancel_job
+#   - 把 CronJob 对象格式化成模型可读的字符串（错误则带上 "Error:" 前缀便于模型识别）
+
 
 def run_schedule_cron(cron: str, prompt: str,
                       recurring: bool = True, durable: bool = True) -> str:
+    # schedule_job 在校验失败时返回错误字符串，成功时返回 CronJob
     result = schedule_job(cron, prompt, recurring, durable)
     if isinstance(result, str):
         return f"Error: {result}"
@@ -573,6 +641,7 @@ def run_schedule_cron(cron: str, prompt: str,
 
 
 def run_list_crons() -> str:
+    # 列表是只读快照，但访问 scheduled_jobs 仍要持锁（防与调度线程的遍历冲突）
     with cron_lock:
         jobs = list(scheduled_jobs.values())
     if not jobs:
@@ -637,6 +706,8 @@ TOOLS = [
      "input_schema": {"type": "object",
                       "properties": {"task_id": {"type": "string"}},
                       "required": ["task_id"]}},
+    # 注册一条 cron 任务。cron 为 5 段表达式（分 时 日 月 周），
+    # prompt 是触发时要注入到 agent 上下文的提示词
     {"name": "schedule_cron",
      "description": "Schedule a cron job. cron is 5-field: min hour dom month dow.",
      "input_schema": {"type": "object",
@@ -650,10 +721,12 @@ TOOLS = [
                           "durable": {"type": "boolean",
                                       "description": "True=persist to disk"}},
                       "required": ["cron", "prompt"]}},
+    # 列出当前所有已注册的 cron 任务（durable + session-only）
     {"name": "list_crons",
      "description": "List all registered cron jobs.",
      "input_schema": {"type": "object", "properties": {},
                       "required": []}},
+    # 按 job_id 取消一条 cron 任务（durable 的会同步从磁盘清除）
     {"name": "cancel_cron",
      "description": "Cancel a cron job by ID.",
      "input_schema": {"type": "object",
@@ -686,9 +759,11 @@ def update_context(context: dict, messages: list) -> dict:
 def agent_loop(messages: list, context: dict) -> dict:
     system = get_system_prompt(context)
     while True:
-        # Layer 4: consume fired cron jobs → inject as messages
+        # 第 4 层（消费者）：从 cron_queue 拉取本轮触发的任务，作为 user message 追加进对话。
+        # 注入位置选择循环开头：保证本次模型调用能「看到」这些任务，从而给出相应反应。
         fired = consume_cron_queue()
         for job in fired:
+            # "[Scheduled]" 前缀让模型能区分「用户输入」和「定时任务触发」两种来源
             messages.append({"role": "user",
                              "content": f"[Scheduled] {job.prompt}"})
             print(f"  \033[35m[inject cron] {job.prompt[:50]}\033[0m")
@@ -771,26 +846,40 @@ def run_agent_turn_locked(user_query: str | None = None):
 
 
 def queue_processor_loop():
-    """Auto-deliver fired cron jobs when the agent is idle."""
+    """队列处理器（独立 daemon 线程）。
+    负责「在 agent 空闲时」自动把 cron_queue 里的任务喂给 agent_loop。
+
+    工作循环：
+      - 每 0.2 秒检查一次
+      - 队列为空就跳过
+      - 用 agent_lock.acquire(blocking=False) 非阻塞抢锁：
+        · 抢到 → 自己是独占运行者，可以安全跑 agent
+        · 没抢到 → 说明用户正在输入，让出本轮
+      - 拿到锁后再次检查队列（防止锁竞争期间队列被其他线程消费）"""
     global session_context
     while True:
         time.sleep(0.2)
         if not has_cron_queue():
             continue
+        # 非阻塞抢锁：抢不到说明用户正持有 agent_lock（用户正在输入），本轮放弃
         if not agent_lock.acquire(blocking=False):
             continue
         try:
+            # 双重检查：拿到锁的瞬间队列可能已被别处处理（极端情况下发生）
             if not has_cron_queue():
                 continue
             print("\n  \033[35m[queue processor] delivering scheduled work\033[0m")
             run_agent_turn_locked()
         finally:
+            # 任何分支都要释放锁，否则 agent 将永久被卡死
             agent_lock.release()
 
 
 if __name__ == "__main__":
     print("s14: cron scheduler")
     print("Enter a question, press Enter to send. Type q to quit.\n")
+    # 启动队列处理器线程：至此 s14 的「调度线程 + 队列 + 队列处理器」三件套全部就位
+    # 注意：调度线程已在模块顶部（load_durable_jobs 之后）启动；此处只需补齐消费者侧
     threading.Thread(target=queue_processor_loop, daemon=True).start()
     print("  \033[35m[queue processor] started\033[0m")
     while True:
@@ -800,5 +889,6 @@ if __name__ == "__main__":
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
+        # 用户输入时持锁，独占 agent；队列处理器会因抢不到锁而自动让出
         with agent_lock:
             run_agent_turn_locked(query)

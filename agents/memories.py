@@ -13,7 +13,7 @@ memories.py - 持久化记忆管理
 
 from pathlib import Path
 
-from tool_base import MEMORY_DIR
+from paths import MEMORY_DIR
 
 
 # ═══════════════════════════════════════════════════════════

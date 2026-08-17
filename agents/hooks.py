@@ -43,7 +43,7 @@ s04 将其重构为钩子,带来以下好处:
 
 import json
 
-from tools import WORKDIR
+from paths import WORKDIR
 
 
 # ═══════════════════════════════════════════════════════════════════════════
