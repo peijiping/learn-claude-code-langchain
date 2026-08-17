@@ -7,7 +7,7 @@
 from pathlib import Path
 
 from paths import WORKDIR, SKILLS_DIR, CHAT_HISTORY_DIR
-from tools import TOOL_REGISTRY
+from tools import ToolRegistry
 from skills import SkillLoader
 
 
@@ -27,13 +27,15 @@ class SystemPromptBuilder:
         self,
         workdir: Path = WORKDIR,
         skills: SkillLoader = None,
-        memory=TOOL_REGISTRY.memory,
+        memory=None,
+        tools: ToolRegistry = None,  # 新增：ToolRegistry 实例（Agent 传入）
         chat_history_dir: Path = CHAT_HISTORY_DIR,
         workspace_instruction_files: tuple[str, ...] = None,
     ):
         self.workdir = workdir
+        self.tools = tools
         self.skills = skills if skills else SkillLoader(SKILLS_DIR)
-        self.memory = memory
+        self.memory = memory if memory is not None else (self.tools.memory if self.tools else None)
         self.chat_history_dir = chat_history_dir
         self.workspace_instruction_files = workspace_instruction_files \
             if workspace_instruction_files else ("CLAUDE.md", "AGENT.md")
@@ -81,9 +83,11 @@ class SystemPromptBuilder:
 
     def _get_tools(self) -> str:
         """工具与并发机制 + 待办 + 工作流规范段（始终加载）。"""
+        if self.tools is None:
+            raise RuntimeError("SystemPromptBuilder 需要传入 ToolRegistry 实例")
         tool_lines = "\n".join(
             f"- {t['function']['name']}（{t['function']['description'].splitlines()[0]}）"
-            for t in TOOL_REGISTRY.main_agent_tools
+            for t in self.tools.main_agent_tools
         )
         return f"""# 工具与并发机制
 可用工具：

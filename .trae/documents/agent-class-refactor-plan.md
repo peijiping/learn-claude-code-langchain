@@ -1,5 +1,21 @@
 # 主 Agent 类化改造计划：agent_full_v2.py → Agent 类 + agent_cli.py 新入口 + 移除全局单例
 
+## 0. 当前进度快照（2026-08-17 复核）
+
+> 以下按实际文件状态核对，区分「已完成」与「待执行」，后续执行只做待办项。
+
+| # | 改动项 | 状态 | 说明 |
+|---|--------|------|------|
+| 4.1 | tools.py 移除全局单例 | ✅ 已完成 | docstring 已更新，文件底部无 `TOOL_REGISTRY = ToolRegistry()` |
+| 4.2 | agent_full_v2.py 类化 | ✅ 已完成 | 已是 `Agent` 类（`__init__` / `init_session` / `run_turn` / `new_session` / `switch_session` / `clear_session` / `agent_loop` 等齐全），底部保留 `__main__` 延迟调 `agent_cli.main` |
+| 4.3 | agent_cli.py 新增入口 | ⏳ 待执行 | 文件尚不存在 |
+| 4.4 | system_prompt.py 注入 tools | ⏳ 待执行 | 仍 `from tools import TOOL_REGISTRY`（L10）/ `memory=TOOL_REGISTRY.memory`（L30）/ `TOOL_REGISTRY.main_agent_tools`（L86）→ **当前 ImportError，模块不可导入** |
+| 4.5 | teammate_manager.py 注入 tools | ⏳ 待执行 | 仍 `from tools import TOOL_REGISTRY`（L29）/ `TOOL_REGISTRY.run_bash/run_read/run_write/run_edit`（L306-318）→ **当前 ImportError** |
+| 4.6 | AGENTS.md 更新 | ⏳ 待执行 | 需补「不再全局单例」与 agent_cli 主入口说明 |
+| 4.7 | project_memory 更新 | ⏳ 待执行 | 记录 Agent 类化 + 移除单例 + 新入口 |
+
+> ⚠️ 由于 4.4 / 4.5 未完成，`agent_full_v2.py` 现在 import 即失败（`system_prompt` → `tools.TOOL_REGISTRY` 不存在）。**执行阶段先从 4.4 / 4.5 修起，保证可导入，再补 4.3 入口。**
+
 ## 1. 背景与目标
 
 当前 `agent_full_v2.py` 是「模块级全局状态 + 函数式 REPL」：`SYSTEM`、`llm_client`、`hook_system`、`Skills`、`subagent_runner`、`background_manager`、`recovery` 全部是模块级变量，`tools.py` 底部还有全局单例 `TOOL_REGISTRY = ToolRegistry()`。

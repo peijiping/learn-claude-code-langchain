@@ -26,7 +26,7 @@ import threading
 from pathlib import Path
 from llm_manage import LLMClient
 from paths import WORKDIR, TEAM_DIR, INBOX_DIR
-from tools import TOOL_REGISTRY
+from tools import ToolRegistry
 
 # -- TeammateManager: persistent named agents with config.json --
 class TeammateManager:
@@ -46,12 +46,13 @@ class TeammateManager:
     - idle -> shutdown: 当收到关闭请求并批准时
     """
 
-    def __init__(self, team_dir: Path):
+    def __init__(self, team_dir: Path, tools: ToolRegistry = None):
         """
         初始化团队成员管理器
 
         参数:
             team_dir: 团队目录路径，用于存放 config.json 和收件箱目录
+            tools: ToolRegistry 实例，用于执行工具调用（默认构造实例，非全局单例）
         """
         self.dir = team_dir
         self.dir.mkdir(exist_ok=True)  # 确保目录存在
@@ -65,6 +66,8 @@ class TeammateManager:
         self.llm_client = LLMClient().llm
 
         self.model = os.environ.get("OPENAI_MODEL_ID", "")
+        # 注入工具实例（实例级默认构造，非全局单例）
+        self.tools = tools if tools is not None else ToolRegistry()
 
 
     def _load_config(self) -> dict:
@@ -303,19 +306,19 @@ class TeammateManager:
         """
         # bash: 执行 Shell 命令
         if tool_name == "bash":
-            return TOOL_REGISTRY.run_bash(args["command"])
+            return self.tools.run_bash(args["command"])
 
         # read_file: 读取文件内容
         if tool_name == "read_file":
-            return TOOL_REGISTRY.run_read(args["path"])
+            return self.tools.run_read(args["path"])
 
         # write_file: 写入文件内容
         if tool_name == "write_file":
-            return TOOL_REGISTRY.run_write(args["path"], args["content"])
+            return self.tools.run_write(args["path"], args["content"])
 
         # edit_file: 编辑文件（替换精确匹配的文本）
         if tool_name == "edit_file":
-            return TOOL_REGISTRY.run_edit(args["path"], args["old_text"], args["new_text"])
+            return self.tools.run_edit(args["path"], args["old_text"], args["new_text"])
 
         # send_message: 发送消息给团队成员
         if tool_name == "send_message":
