@@ -59,14 +59,21 @@ class Agent:
         skills: SkillLoader | None = None,
         memory=None,
         tools: ToolRegistry | None = None,
+        session_prefix: str = "session_",
+        cron_scheduler=None,
     ):
         # ── 模型参数（从 .env 读取） ──
         self.model = os.environ.get("OPENAI_MODEL_ID", "")
         self.fallback_model = os.environ.get("FALLBACK_MODEL_ID", "")
 
+        # ── 会话文件名前缀：默认 "session_"；cron 调度器传入 "cron_" ──
+        self.session_prefix = session_prefix
+
         # ── 依赖（默认惰性构造；允许外部注入，多实例可共享/自定义） ──
         self.skills = skills if skills is not None else SkillLoader(SKILLS_DIR)
-        self.tools = tools if tools is not None else ToolRegistry(skills=self.skills)
+        self.tools = tools if tools is not None else ToolRegistry(
+            skills=self.skills, cron_scheduler=cron_scheduler,
+        )
         self.memory = memory if memory is not None else self.tools.memory
 
         # 钩子实例：每实例独立，主循环与子智能体共用
@@ -115,7 +122,8 @@ class Agent:
         """
         if self.session_manager is None:
             self.session_manager = SessionManager(
-                CHAT_HISTORY_DIR, self.system_prompt.build_system_prompt()
+                CHAT_HISTORY_DIR, self.system_prompt.build_system_prompt(),
+                session_prefix=self.session_prefix,
             )
         if resume:
             self.session_num, self.session_file, self.history_messages = \

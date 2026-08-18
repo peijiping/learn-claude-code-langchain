@@ -51,6 +51,9 @@ MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 # 任务目录
 TASKS_DIR = WORKDIR / ".tasks"
 
+# 持久化路径：所有 durable=True 的任务会被序列化到该文件，重启后自动恢复
+DURABLE_PATH = WORKDIR /".scheduler"/ "scheduled_tasks.json"
+
 
 def ensure_dirs() -> None:
     """一次性创建所有需要预先存在的目录（幂等）。"""
@@ -58,6 +61,7 @@ def ensure_dirs() -> None:
     CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     TODO_DIR.mkdir(parents=True, exist_ok=True)
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
+    DURABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def todo_file_for_session(session_num: int) -> Path:

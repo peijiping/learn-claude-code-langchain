@@ -2,6 +2,7 @@
 """agent_cli.py - 主智能体命令行交互入口
 
 实例化 Agent 并驱动 REPL：input 循环 + 斜杠命令 + readline 中文输入配置。
+启动时初始化 CronScheduler（s14 定时任务调度器），通过大模型对话创建/管理定时任务。
 
 - 新推荐入口：python agent_cli.py
 - 向后兼容：python agent_full_v2.py 内部延迟调用本模块的 main()
@@ -23,6 +24,8 @@ if Path.cwd() != _PROJECT_ROOT:
 
 from dotenv import load_dotenv
 from agent_full_v2 import Agent
+from cron_scheduler import CronScheduler
+from paths import CHAT_HISTORY_DIR, DURABLE_PATH
 
 # readline 中文输入配置（从原 agent_full_v2.py 顶部迁移过来）
 try:
@@ -37,7 +40,12 @@ except ImportError:
 
 def main() -> None:
     load_dotenv(override=True)
-    agent = Agent()
+
+    # ── s14：启动 CronScheduler（定时任务调度器）──
+    cron_scheduler = CronScheduler(CHAT_HISTORY_DIR, DURABLE_PATH)
+    cron_scheduler.start()
+
+    agent = Agent(cron_scheduler=cron_scheduler)
     agent.init_session()  # resume 最近会话或新建
 
     while True:

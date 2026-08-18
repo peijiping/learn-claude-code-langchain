@@ -58,6 +58,7 @@ class ToolRegistry:
         memory: MemoryStore | None = None,
         task_manager: TaskManager | None = None,
         bus: MessageBus | None = None,
+        cron_scheduler=None,
     ):
         # ── 依赖注入：默认惰性构造，允许外部传入自定义实例 ──
         self.skills = skills if skills is not None else SkillLoader(SKILLS_DIR)
@@ -68,6 +69,7 @@ class ToolRegistry:
         # ── holder 模式：运行期注入，避免 tools.py 反向依赖 agent_full_v2 ──
         self._background_manager = None
         self._todo_manager = None
+        self._cron_scheduler = cron_scheduler  # cron 调度器（holder）
 
         # ── 懒加载缓存 ──
         self._handlers_cache = None
@@ -405,6 +407,21 @@ class ToolRegistry:
             # 会自动把已完成任务以 <task_notification> 注入上下文（消费语义），
             # 本工具是"主动查询"补充，用于模型想看还未被消费的任务当前状态。
             "check_background": lambda **kw: self.get_background_manager().check(kw.get("task_id")),
+            # cron 工具（s14）：调度器为 None 时返回占位错误
+            "schedule_cron": lambda **kw: (
+                self._cron_scheduler.run_schedule_cron(
+                    kw["cron"], kw["prompt"],
+                    kw.get("recurring", True), kw.get("durable", True)
+                ) if self._cron_scheduler else "Error: Cron scheduler not available"
+            ),
+            "list_crons": lambda **kw: (
+                self._cron_scheduler.run_list_crons()
+                if self._cron_scheduler else "Error: Cron scheduler not available"
+            ),
+            "cancel_cron": lambda **kw: (
+                self._cron_scheduler.run_cancel_cron(kw["job_id"])
+                if self._cron_scheduler else "Error: Cron scheduler not available"
+            ),
         }
 
     @property
@@ -620,6 +637,38 @@ class ToolRegistry:
                                        "parallel": {"type": "boolean", "default": False,
                                            "description": "True 时与同次响应中其他独立查询并行执行。"}
                                    }}
+                }},
+                # ── cron 定时任务工具（s14）──────────────────────────────
+                {"type": "function", "function": {
+                    "name": "schedule_cron",
+                    "description": "Schedule a cron job. cron is 5-field: min hour dom month dow.",
+                    "parameters": {"type": "object",
+                                   "properties": {
+                                       "cron": {"type": "string",
+                                                "description": "5-field cron expression"},
+                                       "prompt": {"type": "string",
+                                                  "description": "Message to inject when fired"},
+                                       "recurring": {"type": "boolean",
+                                                     "description": "True=recurring, False=one-shot"},
+                                       "durable": {"type": "boolean",
+                                                   "description": "True=persist to disk"}},
+                                   "required": ["cron", "prompt"]}
+                }},
+                {"type": "function", "function": {
+                    "name": "list_crons",
+                    "description": "List all registered cron jobs.",
+                    "parameters": {"type": "object", "properties": {
+                        "parallel": {"type": "boolean", "default": False,
+                            "description": "True 时与同次响应中其他独立查询并行执行。"}
+                    },
+                    "required": []}
+                }},
+                {"type": "function", "function": {
+                    "name": "cancel_cron",
+                    "description": "Cancel a cron job by ID.",
+                    "parameters": {"type": "object",
+                                   "properties": {"job_id": {"type": "string"}},
+                                   "required": ["job_id"]}
                 }},
             ]
         return self._tools_cache

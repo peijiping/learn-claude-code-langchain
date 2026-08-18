@@ -24,16 +24,20 @@ from context_compact import ContextCompact
 class SessionManager:
     """会话管理器，负责对话历史的持久化和管理"""
 
-    def __init__(self, chat_history_dir: Path, system_prompt: str):
+    def __init__(self, chat_history_dir: Path, system_prompt: str,
+                 session_prefix: str = "session_"):
         """
         初始化会话管理器
 
         Args:
             chat_history_dir: 会话历史存储目录
             system_prompt: 系统提示词
+            session_prefix: 会话文件名前缀，默认 "session_"；
+                            cron 调度器传入 "cron_" 以独立编号
         """
         self.chat_history_dir = chat_history_dir
         self.system_prompt = system_prompt
+        self.session_prefix = session_prefix
         self.compact_manager = ContextCompact(
             transcript_dir=chat_history_dir.parent / ".transcripts",
             tool_results_dir=chat_history_dir.parent / ".task_outputs" / "tool-results",
@@ -50,14 +54,14 @@ class SessionManager:
         Returns:
             (会话编号, 会话文件路径) 如果没有会话文件则返回 (0, None)
         """
-        session_files = list(self.chat_history_dir.glob("session_*.jsonl"))
+        session_files = list(self.chat_history_dir.glob(f"{self.session_prefix}*.jsonl"))
         if not session_files:
             return 0, None
 
         max_num = 0
         for f in session_files:
             try:
-                num = int(f.stem.replace("session_", ""))
+                num = int(f.stem.replace(self.session_prefix, ""))
                 if num > max_num:
                     max_num = num
             except ValueError:
@@ -66,7 +70,7 @@ class SessionManager:
         if max_num == 0:
             return 0, None
 
-        return max_num, self.chat_history_dir / f"session_{max_num}.jsonl"
+        return max_num, self.chat_history_dir / f"{self.session_prefix}{max_num}.jsonl"
 
     def get_session_file(self, session_num: int) -> Path:
         """
@@ -78,7 +82,7 @@ class SessionManager:
         Returns:
             会话文件路径
         """
-        return self.chat_history_dir / f"session_{session_num}.jsonl"
+        return self.chat_history_dir / f"{self.session_prefix}{session_num}.jsonl"
 
     def load_session_history(self, session_file: Path) -> list:
         """
@@ -502,11 +506,11 @@ class SessionManager:
             [(会话编号, 会话文件路径, 消息数量), ...]
         """
         sessions = []
-        session_files = list(self.chat_history_dir.glob("session_*.jsonl"))
+        session_files = list(self.chat_history_dir.glob(f"{self.session_prefix}*.jsonl"))
 
         for f in session_files:
             try:
-                num = int(f.stem.replace("session_", ""))
+                num = int(f.stem.replace(self.session_prefix, ""))
                 with open(f, "r", encoding="utf-8") as file:
                     msg_count = sum(1 for line in file if line.strip())
                 sessions.append((num, f, msg_count))
