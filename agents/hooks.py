@@ -85,7 +85,9 @@ class HookSystem:
         "chmod 777",  # 权限过度开放
     ]
 
-    def __init__(self):
+    def __init__(self, silent: bool = False):
+        # silent 模式：抑制所有钩子打印（cron 定时任务用，避免输出混淆主终端）
+        self.silent = silent
         # 事件→回调列表注册表。顺序敏感:PreToolUse 中 permission_hook 必须
         # 排在 log_hook 之前,这样一旦权限被阻断,日志才会记录"被阻断"的状态。
         self._hooks: dict[str, list] = {
@@ -261,7 +263,8 @@ class HookSystem:
         返回:
             None (不修改 query,只打印日志)。
         """
-        print(f"\033[2;95m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
+        if not self.silent:
+            print(f"\033[2;95m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
         return None
 
     def summary_hook(self, messages: list):
@@ -294,7 +297,8 @@ class HookSystem:
                     for b in content:
                         if isinstance(b, dict) and b.get("role") == "tool":
                             tool_count += 1
-        print(f"\033[2;95m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
+        if not self.silent:
+            print(f"\033[2;95m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
         return None
 
     # ═════════════════════════════════════════════════════════════════════

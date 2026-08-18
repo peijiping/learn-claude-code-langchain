@@ -61,6 +61,7 @@ class Agent:
         tools: ToolRegistry | None = None,
         session_prefix: str = "session_",
         cron_scheduler=None,
+        silent: bool = False,
     ):
         # ── 模型参数（从 .env 读取） ──
         self.model = os.environ.get("OPENAI_MODEL_ID", "")
@@ -68,6 +69,9 @@ class Agent:
 
         # ── 会话文件名前缀：默认 "session_"；cron 调度器传入 "cron_" ──
         self.session_prefix = session_prefix
+
+        # ── silent 模式：抑制所有打印输出（cron 定时任务用） ──
+        self.silent = silent
 
         # ── 依赖（默认惰性构造；允许外部注入，多实例可共享/自定义） ──
         self.skills = skills if skills is not None else SkillLoader(SKILLS_DIR)
@@ -77,7 +81,7 @@ class Agent:
         self.memory = memory if memory is not None else self.tools.memory
 
         # 钩子实例：每实例独立，主循环与子智能体共用
-        self.hook_system = HookSystem()
+        self.hook_system = HookSystem(silent=self.silent)
         self.hook_system.register_default_hooks()
 
         # 后台任务管理器：挂到本实例 tools 的 holder 上（实例级，非全局）
@@ -109,6 +113,12 @@ class Agent:
         self.session_num: int | None = None
         self.session_file: Path | None = None
         self.history_messages: list = []
+
+    # ── silent 打印辅助 ──────────────────────────────────────────
+    def _print(self, *args, **kwargs):
+        """silent 模式下抑制所有 print 输出（cron 定时任务用）。"""
+        if not self.silent:
+            print(*args, **kwargs)
 
     # ═══════════════════════════════════════════════════════════
     #  会话生命周期（CLI / cron / TUI 共用接缝）
@@ -281,7 +291,7 @@ class Agent:
                 f"Command: {cmd_text}. "
                 f"Result will be available when complete."
             )
-            print(f">> {tool_name} 后台分发: {bg_id}")
+            self._print(f">> {tool_name} 后台分发: {bg_id}")
         else:
             # 同步路径：直接走原逻辑
             executor = self._make_executor(tool_name, tool_args)
@@ -316,7 +326,7 @@ class Agent:
             pre_msg = {"role": "user", "content": "\n".join(pre_notifs)}
             self.history_messages.append(pre_msg)
             self.session_manager.append_message_to_session(self.session_file, pre_msg)
-            print(
+            self._print(
                 f"  \033[32m[inject pre-loop] {len(pre_notifs)} background notification(s)\033[0m"
             )
 
@@ -329,7 +339,7 @@ class Agent:
         while True:
             iteration += 1
             if iteration > self.MAX_AGENT_ITERATIONS:
-                print(
+                self._print(
                     f"\033[31m[警告] 智能体循环达到最大迭代次数 ({self.MAX_AGENT_ITERATIONS})，强制结束\033[0m"
                 )
                 break
@@ -365,10 +375,10 @@ class Agent:
                 response_tool_calls = response_msg.tool_calls or []
                 # 打印大模型的思考和回复内容
                 # ANSI: \033[2m=暗(细体)，\033[90m=灰色，\033[0m=重置
-                print(
+                self._print(
                     f"\033[2;90m[thinking]\n{truncate_chars(response_msg.reasoning_content, 300)}\n[/thinking]\033[0m"
                 )
-                print(f"[本轮回复]\n{response_msg.content}")
+                self._print(f"[本轮回复]\n{response_msg.content}")
 
             except Exception as e:
                 # 外层异常处理：内层 with_retry 主动 raise 出来的"非临时错误"会到这一层。
@@ -411,13 +421,13 @@ class Agent:
                 return
 
             # ANSI: \033[2m=暗(细体)，\033[93m=浅黄，\033[0m=重置（与上方灰色 [thinking] 区分）
-            print(f"\033[2;93m[本轮大模型调用工具数量] {len(response_tool_calls)}\033[0m")
+            self._print(f"\033[2;93m[本轮大模型调用工具数量] {len(response_tool_calls)}\033[0m")
             for tc in response_tool_calls:
                 # 单行打印超 200 字符截断，避免大参数（如大段代码/长路径）刷屏
-                print(
+                self._print(
                     f"\033[2;93m{truncate_chars(f"  - {tc.function.name}({tc.function.arguments})  #id={tc.id}\n ")}\033[0m"
                 )
-            print(f"\033[2;93m[本轮大模型工具调用结束,等待执行结果]\033[0m")
+            self._print(f"\033[2;93m[本轮大模型工具调用结束,等待执行结果]\033[0m")
             # 三阶段执行：后台 → 并行 → 串行, 互斥分桶。
             #   后台桶: args.run_in_background=true, 立即分发给 background_manager 守护线程
             #   并行桶: args.parallel=true (且非后台), 线程池并发, 全部完成才走下一步
@@ -451,7 +461,7 @@ class Agent:
                     }
                     continue
                 tool_call_result = self._execute_tool_call(tool_call)
-                print(
+                self._print(
                     f"\033[2;93m [工具执行结果(后台)]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m"
                 )
                 tool_call_results[tool_call.id] = tool_call_result
@@ -481,7 +491,7 @@ class Agent:
                                 "role": "tool", "tool_call_id": tc.id,
                                 "content": f"Error: {type(e).__name__}: {e}",
                             }
-                        print(
+                        self._print(
                             f"\033[2;93m [工具执行结果(并行)]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m"
                         )
                         tool_call_results[tc.id] = tool_call_result
@@ -496,7 +506,7 @@ class Agent:
                     }
                     continue
                 tool_call_result = self._execute_tool_call(tool_call)
-                print(
+                self._print(
                     f"\033[2;93m [工具执行结果(串行)]\n {truncate_chars(str(tool_call_result.get("content", "")))}\n [/工具执行结果]\033[0m"
                 )
                 tool_call_results[tool_call.id] = tool_call_result
@@ -535,7 +545,7 @@ class Agent:
                 self.session_manager.append_message_to_session(
                     self.session_file, notification_msg
                 )
-                print(
+                self._print(
                     f"  \033[32m[inject] {len(bg_notifications)} background notification(s)\033[0m"
                 )
 
@@ -550,4 +560,4 @@ class Agent:
                 )
                 rounds_since_todo = 0
 
-        print("\033[2;93m[****一个turn循环结束****]\n \033[0m\n")
+        self._print("\033[2;93m[****一个turn循环结束****]\n \033[0m\n")

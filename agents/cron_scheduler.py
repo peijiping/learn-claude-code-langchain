@@ -211,6 +211,8 @@ class CronScheduler:
         )
         with self._lock:
             self.scheduled_jobs[job.id] = job
+            # 防止刚注册就立即触发：将 last_fired 设为当前分钟，至少等到下一分钟才首次触发
+            self._last_fired[job.id] = datetime.now().strftime("%Y-%m-%d %H:%M")
         if durable:
             self._save_durable_jobs()
         print(f"  \033[35m[cron register] {job.id} '{cron}' → {prompt[:40]}\033[0m")
@@ -314,11 +316,11 @@ class CronScheduler:
         from agent_full_v2 import Agent
 
         try:
-            agent = Agent(session_prefix="cron_")
+            agent = Agent(session_prefix="cron_", silent=True)
             agent.init_session(resume=False)
             print(f"  \033[35m[cron execute] {job.id} → session "
                   f"cron_{agent.session_num}\033[0m")
-            agent.run_turn(f"[Scheduled] {job.prompt}")
+            result = agent.run_turn(f"[Scheduled] {job.prompt}")
         except Exception as e:
             print(f"  \033[31m[cron execute error] {job.id}: {e}\033[0m")
 
