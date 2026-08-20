@@ -24,7 +24,8 @@ from dotenv import load_dotenv
 from session_manage import SessionManager
 from subagent import SubAgent
 from background_manager import BackgroundManager
-from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR
+from teammate_manager import TeammateManager
+from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR
 from tools import ToolRegistry
 from skills import SkillLoader
 from llm_manage import LLMClient
@@ -87,6 +88,10 @@ class Agent:
         # 后台任务管理器：挂到本实例 tools 的 holder 上（实例级，非全局）
         self.background_manager = BackgroundManager()
         self.tools.set_background_manager(self.background_manager)
+
+        # 团队成员管理器（s17）：挂到本实例 tools 的 holder 上（注入本实例 tools，实例级）
+        self.teammate_manager = TeammateManager(TEAM_DIR, tools=self.tools)
+        self.tools.set_teammate_manager(self.teammate_manager)
 
         # 子智能体：复用本实例的工具集/处理器/hooks
         self.subagent_runner = SubAgent(

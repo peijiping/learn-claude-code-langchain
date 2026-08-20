@@ -59,6 +59,7 @@ class ToolRegistry:
         task_manager: TaskManager | None = None,
         bus: MessageBus | None = None,
         cron_scheduler=None,
+        teammate_manager=None,
     ):
         # ── 依赖注入：默认惰性构造，允许外部传入自定义实例 ──
         self.skills = skills if skills is not None else SkillLoader(SKILLS_DIR)
@@ -70,6 +71,7 @@ class ToolRegistry:
         self._background_manager = None
         self._todo_manager = None
         self._cron_scheduler = cron_scheduler  # cron 调度器（holder）
+        self._teammate_manager = teammate_manager  # 团队成员管理器（holder，s17）
 
         # ── 懒加载缓存 ──
         self._handlers_cache = None
@@ -91,6 +93,19 @@ class ToolRegistry:
         if mgr is None:
             raise RuntimeError(
                 "BackgroundManager 未初始化。请先调用 set_background_manager(...)。"
+            )
+        return mgr
+
+    def set_teammate_manager(self, tm) -> None:
+        """由 agent_full_v2.py 在启动时调用一次，挂上 TeammateManager 实例（s17）。"""
+        self._teammate_manager = tm
+
+    def get_teammate_manager(self):
+        """获取 TeammateManager 实例；未初始化时抛错，提示调用方先 set_teammate_manager。"""
+        mgr = self._teammate_manager
+        if mgr is None:
+            raise RuntimeError(
+                "TeammateManager 未初始化。请先调用 set_teammate_manager(...)。"
             )
         return mgr
 
@@ -422,6 +437,31 @@ class ToolRegistry:
                 self._cron_scheduler.run_cancel_cron(kw["job_id"])
                 if self._cron_scheduler else "Error: Cron scheduler not available"
             ),
+            # ── 团队成员工具（s17 自主智能体）──
+            # teammate_manager 为 None 时返回占位错误（与 cron 工具一致的 holder 语义）
+            "spawn_teammate": lambda **kw: (
+                self.get_teammate_manager().spawn_teammate(
+                    kw["name"], kw["role"], kw["prompt"]
+                )
+            ),
+            "send_message": lambda **kw: (
+                self.get_teammate_manager().send_message(
+                    kw["to"], kw["content"])
+            ),
+            "check_inbox": lambda **kw: (
+                self.get_teammate_manager().check_inbox()
+            ),
+            "request_shutdown": lambda **kw: (
+                self.get_teammate_manager().request_shutdown(kw["teammate"])
+            ),
+            "request_plan": lambda **kw: (
+                self.get_teammate_manager().request_plan(
+                    kw["teammate"], kw["task"])
+            ),
+            "review_plan": lambda **kw: (
+                self.get_teammate_manager().review_plan(
+                    kw["request_id"], kw["approve"], kw.get("feedback", ""))
+            ),
         }
 
     @property
@@ -669,6 +709,71 @@ class ToolRegistry:
                     "parameters": {"type": "object",
                                    "properties": {"job_id": {"type": "string"}},
                                    "required": ["job_id"]}
+                }},
+                # ── 团队成员工具（s17自主智能体）─────────────────────────
+                {"type": "function", "function": {
+                    "name": "spawn_teammate",
+                    "description": "Spawn an autonomous teammate agent in a "
+                                   "background thread. Teammate runs a "
+                                   "WORK→IDLE loop: lists and claims tasks "
+                                   "from the board, checks inbox, then shuts "
+                                   "down. Use with send_message / check_inbox "
+                                   "/ request_shutdown / request_plan / "
+                                   "review_plan.",
+                    "parameters": {"type": "object",
+                                   "properties": {
+                                       "name": {"type": "string"},
+                                       "role": {"type": "string"},
+                                       "prompt": {"type": "string"}},
+                                   "required": ["name", "role", "prompt"]}
+                }},
+                {"type": "function", "function": {
+                    "name": "send_message",
+                    "description": "Send a message to a teammate.",
+                    "parameters": {"type": "object",
+                                   "properties": {
+                                       "to": {"type": "string"},
+                                       "content": {"type": "string"}},
+                                   "required": ["to", "content"]}
+                }},
+                {"type": "function", "function": {
+                    "name": "check_inbox",
+                    "description": "Check Lead's inbox for teammate messages "
+                                   "and protocol responses (plan/shutdown). "
+                                   "Routes protocol responses to their "
+                                   "original requests.",
+                    "parameters": {"type": "object", "properties": {},
+                                   "required": []}
+                }},
+                # 协议工具（队友管理）
+                {"type": "function", "function": {
+                    "name": "request_shutdown",
+                    "description": "Request a teammate to shut down "
+                                   "gracefully.",
+                    "parameters": {"type": "object",
+                                   "properties": {"teammate": {"type": "string"}},
+                                   "required": ["teammate"]}
+                }},
+                {"type": "function", "function": {
+                    "name": "request_plan",
+                    "description": "Ask a teammate to submit a plan for "
+                                   "review.",
+                    "parameters": {"type": "object",
+                                   "properties": {
+                                       "teammate": {"type": "string"},
+                                       "task": {"type": "string"}},
+                                   "required": ["teammate", "task"]}
+                }},
+                {"type": "function", "function": {
+                    "name": "review_plan",
+                    "description": "Approve or reject a submitted plan by "
+                                   "request_id.",
+                    "parameters": {"type": "object",
+                                   "properties": {
+                                       "request_id": {"type": "string"},
+                                       "approve": {"type": "boolean"},
+                                       "feedback": {"type": "string"}},
+                                   "required": ["request_id", "approve"]}
                 }},
             ]
         return self._tools_cache

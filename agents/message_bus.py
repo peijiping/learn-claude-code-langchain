@@ -15,7 +15,9 @@ VALID_MSG_TYPES = {
     "broadcast",             # 广播消息，发送给所有团队成员
     "shutdown_request",     # 关闭请求，请求目标团队成员优雅关闭
     "shutdown_response",     # 关闭响应，目标对关闭请求的批准/拒绝回复
+    "plan_approval_request", # 计划审批请求，队友向 Lead 提交计划等待审批（s16/s17）
     "plan_approval_response", # 计划审批响应，对计划请求的批准/拒绝回复
+    "result",                # 工作结果，队友完成后发给 Lead 的总结（s17）
 }
 
 
@@ -86,7 +88,7 @@ class MessageBus:
         # 将消息追加写入接收者的收件箱文件
         inbox_path = self.dir / f"{to}.jsonl"
         with open(inbox_path, "a") as f:
-            f.write(json.dumps(msg) + "\n")
+            f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
         return f"Sent {msg_type} to {to}"
 
