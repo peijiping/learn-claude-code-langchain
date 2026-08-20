@@ -173,7 +173,7 @@ class CronScheduler:
     def _save_durable_jobs(self):
         """把所有 durable=True 的任务持久化到 .scheduled_tasks.json。"""
         durable = [asdict(j) for j in self.scheduled_jobs.values() if j.durable]
-        self.durable_path.write_text(json.dumps(durable, indent=2))
+        self.durable_path.write_text(json.dumps(durable, indent=2, ensure_ascii=False))
 
     def _load_durable_jobs(self):
         """进程启动时从 .scheduled_tasks.json 恢复任务。"""
@@ -281,8 +281,8 @@ class CronScheduler:
                             if self._last_fired.get(job.id) != minute_marker:
                                 self.cron_queue.append(job)
                                 self._last_fired[job.id] = minute_marker
-                                print(f"  \033[35m[cron fire] {job.id} → "
-                                      f"{job.prompt[:40]}\033[0m")
+                                # print(f"  \033[35m[cron fire] {job.id} → "
+                                #       f"{job.prompt[:40]}\033[0m")
                             if not job.recurring:
                                 self.scheduled_jobs.pop(job.id, None)
                                 if job.durable:
@@ -318,8 +318,8 @@ class CronScheduler:
         try:
             agent = Agent(session_prefix="cron_", silent=True)
             agent.init_session(resume=False)
-            print(f"  \033[35m[cron execute] {job.id} → session "
-                  f"cron_{agent.session_num}\033[0m")
+            # print(f"  \033[35m[cron execute] {job.id} → session "
+            #       f"cron_{agent.session_num}\033[0m")
             result = agent.run_turn(f"[Scheduled] {job.prompt}")
         except Exception as e:
             print(f"  \033[31m[cron execute error] {job.id}: {e}\033[0m")
