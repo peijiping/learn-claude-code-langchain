@@ -49,10 +49,29 @@ class TaskManager:
         """
         self.task_dir = tasks_dir if tasks_dir else TASKS_DIR  # 任务文件存储目录
         self.task_dir.mkdir(exist_ok=True)  # 如果目录不存在则创建
+        # 作用域：会话内任务板用它把任务限定在某个会话（如 "session_3" / "cron_1"）。
+        # None 表示旧的全局看板（无会话上下文，向后兼容）。
+        self.scope: str | None = None
+
+    def set_scope(self, scope: str | None) -> None:
+        """
+        设置作用域。作用域为 None 时是全局看板；非空时任务只在本会话内可见/可操作。
+
+        由 Agent 在切换会话时调用（与 todo 的 set_todo_manager 平行），
+        scope 值取 f"{session_prefix}{session_num}"，如 "session_3"。
+        """
+        self.scope = scope
 
     def _task_path(self, task_id: str) -> Path:
         """根据 task_id 返回对应的 JSON 文件路径(私有内部工具函数)。"""
         return self.task_dir / f"{task_id}.json"
+
+    def _scope_prefix(self) -> str:
+        """
+        返回当前作用域的文件名前缀，用于任务 ID 与列表过滤。
+        scope 非空 → "task_{scope}_"（如 "task_session_3_"）；None → 旧全局命名 "task_"。
+        """
+        return f"task_{self.scope}_" if self.scope else "task_"
 
     def _create_task(self, subject: str, description: str = "",
                     blockedBy: list[str] | None = None) -> Task:
@@ -60,12 +79,14 @@ class TaskManager:
         创建一个新任务。
 
         - 自动生成全局唯一 ID(时间戳 + 随机数后缀,降低冲突概率)
+        - ID 前缀编码所属作用域（如 task_session_3_{ts}_{rand}）在文件名中，
+          实现"用文件名标识与 session 的关系"
         - 初始状态为 pending,owner 为 None(尚未被认领)
         - 立即落盘到 .tasks/{id}.json,确保创建即持久
         - 可选 blockedBy 用于声明对其他任务的依赖(实现 DAG 编排)
         """
         task = Task(
-            id=f"task_{int(time.time())}_{random.randint(0, 9999):04d}",
+            id=f"{self._scope_prefix()}{int(time.time())}_{random.randint(0, 9999):04d}",
             subject=subject,
             description=description,
             status="pending",
@@ -78,7 +99,7 @@ class TaskManager:
 
     def _save_task(self, task: Task):
         """将 Task 对象序列化为 JSON 并覆盖写入对应文件(每次状态变更都要调用)。"""
-        self._task_path(task.id).write_text(json.dumps(asdict(task), indent=2))
+        self._task_path(task.id).write_text(json.dumps(asdict(task), indent=2, ensure_ascii=False), encoding="utf-8")
 
 
     def _load_task(self, task_id: str) -> Task:
@@ -87,15 +108,20 @@ class TaskManager:
 
 
     def _list_tasks(self) -> list[Task]:
-        """列出 .tasks/ 目录下所有 task_*.json 并按文件名字典序返回(等价于按时间排序)。"""
+        """
+        列出当前作用域下所有任务并按文件名字典序返回(等价于按时间排序)。
+
+        作用域过滤：scope 非空时只列出文件名带该会话前缀的任务；
+        scope 为 None 时列出全部（旧全局看板，向后兼容）。
+        """
         return [Task(**json.loads(p.read_text()))
-                for p in sorted(self.task_dir.glob("task_*.json"))]
+                for p in sorted(self.task_dir.glob(f"{self._scope_prefix()}*.json"))]
 
 
     def _get_task(self, task_id: str) -> str:
         """返回任务的完整 JSON 详情字符串,供模型查看完整上下文。"""
         task = self._load_task(task_id)
-        return json.dumps(asdict(task), indent=2)
+        return json.dumps(asdict(task), indent=2, ensure_ascii=False)
 
 
     def _can_start(self, task_id: str) -> bool:
@@ -167,7 +193,31 @@ class TaskManager:
         if unblocked:
             msg += f"\nUnblocked: {', '.join(unblocked)}"
             print(f"  \033[33m[unblocked] {', '.join(unblocked)}\033[0m")
+        # 会话内任务板：若本会话任务已全部完成，自动清理该会话的任务文件
+        self._gc_scoped_tasks()
         return msg
+
+    def _gc_scoped_tasks(self) -> int:
+        """
+        会话内任务板的自动清理：仅当 scope 非空、且当前作用域下存在任务、
+        并且全部任务都已 completed 时，删除本会话的全部任务文件，返回删除数。
+
+        规则：
+        - scope 为 None 的全局看板不触发清理，避免误删遗留数据。
+        - 只要还有 pending / in_progress 任务，就不清理（仍然有活要干）。
+        - "最后一个任务完成"即满足条件，整个过程让本会话任务板快速归零。
+        """
+        if not self.scope:
+            return 0
+        files = sorted(self.task_dir.glob(f"{self._scope_prefix()}*.json"))
+        if not files:
+            return 0
+        if any(t.status != "completed" for t in self._list_tasks()):
+            return 0
+        for p in files:
+            p.unlink(missing_ok=True)
+        print(f"  \033[33m[gc] session '{self.scope}' 任务已全部完成，清理 {len(files)} 个任务文件\033[0m")
+        return len(files)
 
     # ── Task tools (面向模型工具调用的薄包装层) ──
     # 这些 run_* 函数是核心业务函数(create_task / list_tasks 等)与 LLM 工具调用之间的桥梁。

@@ -152,6 +152,8 @@ class Agent:
                 self.session_manager.create_initialized_session()
         # todo 与 session 绑定：每次切会话都要重新指向对应的 todo 文件
         self.tools.set_todo_manager(self.session_num)
+        # task 与 session 绑定：任务板限定在本会话作用域（"session_N"/"cron_N"）
+        self.tools.task_manager.set_scope(f"{self.session_prefix}{self.session_num}")
         self._inject_todo_reminder()
         return self.session_num
 
@@ -182,6 +184,7 @@ class Agent:
             self.session_manager.create_initialized_session()
         # 新会话的 todo 文件尚不存在，set_todo_manager 会建出空列表；reminder 不会注入
         self.tools.set_todo_manager(self.session_num)
+        self.tools.task_manager.set_scope(f"{self.session_prefix}{self.session_num}")
         return self.session_num, f"已创建新会话: session_{self.session_num}.jsonl"
 
     def switch_session(self, target_num: int) -> tuple[int, int]:
@@ -192,6 +195,7 @@ class Agent:
         self.session_num, self.session_file, self.history_messages = \
             self.session_manager.switch_session(target_num)
         self.tools.set_todo_manager(self.session_num)
+        self.tools.task_manager.set_scope(f"{self.session_prefix}{self.session_num}")
         self._inject_todo_reminder()
         return self.session_num, len(self.history_messages)
 
