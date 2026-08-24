@@ -13,6 +13,7 @@
   agent.run_turn("[Scheduled] ...") # 非交互单轮
 """
 import os
+import re
 from pathlib import Path
 
 # 锁定 cwd 到本仓库根目录：保证 paths.py 的 `ROOT_DIR = Path.cwd()` 始终解析到正确位置。
@@ -51,13 +52,28 @@ def main() -> None:
     while True:
         try:
             label = agent.context_label()
-            query = input(f"\033[36m[session_{agent.session_num} ({label})] >> \033[0m")
+            mode_tag = "|teams" if agent.team_mode else ""
+            query = input(f"\033[36m[session_{agent.session_num} ({label}{mode_tag})] >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         cmd = query.strip().lower()
         if cmd == "/help":
-            print("可用命令: /q /newsession /switchsession N /clearsession /tasks /compact /skills")
+            help_lines = [
+                ("/help", "显示本帮助信息"),
+                ("/q 或 /exit", "退出程序"),
+                ("/newsession", "新建一个会话"),
+                ("/switchsession N", "切换到第 N 个会话"),
+                ("/clearsession", "清空当前会话的全部历史消息"),
+                ("/tasks", "查看当前任务列表"),
+                ("/compact", "压缩当前会话上下文"),
+                ("/skills", "查看当前可用的技能"),
+                ("/teams", "进入团队模式（s17 队友协作）"),
+                ("/subagent", "退出团队模式，回到默认子智能体模式"),
+            ]
+            print("可用命令：")
+            for name, desc in help_lines:
+                print(f"  {name:<18} {desc}")
             continue
         if cmd in ("/q", "/exit", ""):
             break
@@ -87,6 +103,32 @@ def main() -> None:
             continue
         if cmd == "/skills":
             print(f"当前可用技能:\n{agent.show_skills()}")
+            continue
+        # /teams 与 /subagent：只要在输入中被空格独立隔开（前后为空白或行界）即生效，
+        # 无需单独成行。如 `帮我 /teams 一下`、`请 /subagent 吧` 均会触发。
+        teams_m = re.search(r"(?<!\S)/teams(?!\S)", query)
+        subagent_m = re.search(r"(?<!\S)/subagent(?!\S)", query)
+        if subagent_m:
+            # 退出团队模式（粘性），回到默认子智能体分发模式
+            agent.team_mode = False
+            print("\033[33m已退出团队模式，回到默认子智能体模式。\033[0m")
+            continue
+        if teams_m:
+            # 进入团队模式（粘性）：把 6 个团队工具暴露给 LLM。
+            # 若匹配位置之后还带了文本（如 `请 /teams 让队友 A 负责 X`），
+            # 用该文本作为本轮输入立刻执行；否则只切换模式等待下一条。
+            agent.team_mode = True
+            rest = query[teams_m.end():].strip()
+            if rest:
+                reply = agent.run_turn(rest)
+                print(reply)
+                print()
+            else:
+                print(
+                    "\033[33m已进入团队模式（可用 spawn_teammate / send_message / check_inbox /\n"
+                    "  request_shutdown / request_plan / review_plan 编排队友）。\n"
+                    "输入 /subagent 可退出团队模式，回到默认子智能体模式。\033[0m"
+                )
             continue
 
         # 普通用户输入 → 跑一轮

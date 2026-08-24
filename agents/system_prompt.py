@@ -87,11 +87,16 @@ class SystemPromptBuilder:
             raise RuntimeError("SystemPromptBuilder 需要传入 ToolRegistry 实例")
         tool_lines = "\n".join(
             f"- {t['function']['name']}（{t['function']['description'].splitlines()[0]}）"
-            for t in self.tools.main_agent_tools
+            for t in self.tools.default_agent_tools
         )
         return f"""# 工具与并发机制
 可用工具：
 {tool_lines}
+
+> 模式说明：默认使用 sub_agent 分发子任务。当用户输入 `/teams` 进入团队模式后，
+> 还会多出 spawn_teammate / send_message / check_inbox / request_shutdown /
+> request_plan / review_plan 6 个团队工具，用于编排队友协作；此时团队工具 schema 由
+> API 直接下发，可直接调用。
 
 ## sub_agent（子智能体）
 **强制使用**（主对话不得直接执行）：读 ≥3 文件 / 读 PDF / 工具调用 ≥5 步 / 搜索或探索代码库。

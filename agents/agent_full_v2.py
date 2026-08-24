@@ -93,6 +93,10 @@ class Agent:
         self.teammate_manager = TeammateManager(TEAM_DIR, tools=self.tools)
         self.tools.set_teammate_manager(self.teammate_manager)
 
+        # 团队模式标志（粘性）：默认 False（子智能体分发模式）；
+        # 由 CLI 的 /teams 置 True、/subagent 置 False，决定 agent_loop 喂哪套工具集。
+        self.team_mode = False
+
         # 子智能体：复用本实例的工具集/处理器/hooks
         self.subagent_runner = SubAgent(
             self.tools.base_tools, self.tools.handlers, self.hook_system
@@ -365,7 +369,7 @@ class Agent:
                         model=mdl,
                         messages=self.history_messages,
                         max_tokens=mt,
-                        tools=self.tools.main_agent_tools,
+                        tools=self.tools.main_agent_tools if self.team_mode else self.tools.default_agent_tools,
                         tool_choice="auto",  # 工具选择，值域 none、auto、required，默认 auto
                         parallel_tool_calls=True,  # 是否并行执行工具调用，默认 False
                         stream=False,  # 是否流式输出，默认 False

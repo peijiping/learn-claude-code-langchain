@@ -38,6 +38,15 @@ from message_bus import MessageBus, VALID_MSG_TYPES
 from memories import MemoryStore
 
 
+# ── 团队工具名集合（s17 自主智能体）────────────────────────────────
+# 默认（子智能体）模式下这些工具不暴露给 LLM；仅 `/teams` 进入团队模式
+# 时才出现在喂给 LLM 的工具集里（见 default_agent_tools / main_agent_tools）。
+TEAM_TOOL_NAMES = {
+    "spawn_teammate", "send_message", "check_inbox",
+    "request_shutdown", "request_plan", "review_plan",
+}
+
+
 class ToolRegistry:
     """
     统一管理所有工具：方法、定义、处理器与执行入口。
@@ -78,6 +87,7 @@ class ToolRegistry:
         self._base_tools_cache = None
         self._tools_cache = None
         self._main_agent_tools_cache = None
+        self._default_agent_tools_cache = None
 
     # ═══════════════════════════════════════════════════════════
     #  holder 模式：background / todo（运行期注入）
@@ -710,100 +720,133 @@ class ToolRegistry:
                                    "properties": {"job_id": {"type": "string"}},
                                    "required": ["job_id"]}
                 }},
-                # ── 团队成员工具（s17自主智能体）─────────────────────────
-                {"type": "function", "function": {
-                    "name": "spawn_teammate",
-                    "description": "Spawn an autonomous teammate agent in a "
-                                   "background thread. Teammate runs a "
-                                   "WORK→IDLE loop: lists and claims tasks "
-                                   "from the board, checks inbox, then shuts "
-                                   "down. Use with send_message / check_inbox "
-                                   "/ request_shutdown / request_plan / "
-                                   "review_plan.",
-                    "parameters": {"type": "object",
-                                   "properties": {
-                                       "name": {"type": "string"},
-                                       "role": {"type": "string"},
-                                       "prompt": {"type": "string"}},
-                                   "required": ["name", "role", "prompt"]}
-                }},
-                {"type": "function", "function": {
-                    "name": "send_message",
-                    "description": "Send a message to a teammate.",
-                    "parameters": {"type": "object",
-                                   "properties": {
-                                       "to": {"type": "string"},
-                                       "content": {"type": "string"}},
-                                   "required": ["to", "content"]}
-                }},
-                {"type": "function", "function": {
-                    "name": "check_inbox",
-                    "description": "Check Lead's inbox for teammate messages "
-                                   "and protocol responses (plan/shutdown). "
-                                   "Routes protocol responses to their "
-                                   "original requests.",
-                    "parameters": {"type": "object", "properties": {},
-                                   "required": []}
-                }},
-                # 协议工具（队友管理）
-                {"type": "function", "function": {
-                    "name": "request_shutdown",
-                    "description": "Request a teammate to shut down "
-                                   "gracefully.",
-                    "parameters": {"type": "object",
-                                   "properties": {"teammate": {"type": "string"}},
-                                   "required": ["teammate"]}
-                }},
-                {"type": "function", "function": {
-                    "name": "request_plan",
-                    "description": "Ask a teammate to submit a plan for "
-                                   "review.",
-                    "parameters": {"type": "object",
-                                   "properties": {
-                                       "teammate": {"type": "string"},
-                                       "task": {"type": "string"}},
-                                   "required": ["teammate", "task"]}
-                }},
-                {"type": "function", "function": {
-                    "name": "review_plan",
-                    "description": "Approve or reject a submitted plan by "
-                                   "request_id.",
-                    "parameters": {"type": "object",
-                                   "properties": {
-                                       "request_id": {"type": "string"},
-                                       "approve": {"type": "boolean"},
-                                       "feedback": {"type": "string"}},
-                                   "required": ["request_id", "approve"]}
-                }},
+                # 团队成员工具由 _team_tool_defs() 提供，避免与 tools 内联重复
+                *self._team_tool_defs(),
             ]
         return self._tools_cache
 
+    # ── 团队工具定义（s17自主智能体）──仅团队模式下喂给 LLM ─────────
+    def _team_tool_defs(self) -> list:
+        """6 个团队工具定义（spawn/send_message/check_inbox/协议工具）。
+
+        供 `tools` 属性展开使用；默认（非团队）模式下会被 default_agent_tools
+        整体剔除，不暴露给 LLM，从而省掉这部分的 schema token 开销。
+        """
+        return [
+            {"type": "function", "function": {
+                "name": "spawn_teammate",
+                "description": "Spawn an autonomous teammate agent in a "
+                               "background thread. Teammate runs a "
+                               "WORK→IDLE loop: lists and claims tasks "
+                               "from the board, checks inbox, then shuts "
+                               "down. Use with send_message / check_inbox "
+                               "/ request_shutdown / request_plan / "
+                               "review_plan.",
+                "parameters": {"type": "object",
+                               "properties": {
+                                   "name": {"type": "string"},
+                                   "role": {"type": "string"},
+                                   "prompt": {"type": "string"}},
+                               "required": ["name", "role", "prompt"]}
+            }},
+            {"type": "function", "function": {
+                "name": "send_message",
+                "description": "Send a message to a teammate.",
+                "parameters": {"type": "object",
+                               "properties": {
+                                   "to": {"type": "string"},
+                                   "content": {"type": "string"}},
+                               "required": ["to", "content"]}
+            }},
+            {"type": "function", "function": {
+                "name": "check_inbox",
+                "description": "Check Lead's inbox for teammate messages "
+                               "and protocol responses (plan/shutdown). "
+                               "Routes protocol responses to their "
+                               "original requests.",
+                "parameters": {"type": "object", "properties": {},
+                               "required": []}
+            }},
+            # 协议工具（队友管理）
+            {"type": "function", "function": {
+                "name": "request_shutdown",
+                "description": "Request a teammate to shut down "
+                               "gracefully.",
+                "parameters": {"type": "object",
+                               "properties": {"teammate": {"type": "string"}},
+                               "required": ["teammate"]}
+            }},
+            {"type": "function", "function": {
+                "name": "request_plan",
+                "description": "Ask a teammate to submit a plan for "
+                               "review.",
+                "parameters": {"type": "object",
+                               "properties": {
+                                   "teammate": {"type": "string"},
+                                   "task": {"type": "string"}},
+                               "required": ["teammate", "task"]}
+            }},
+            {"type": "function", "function": {
+                "name": "review_plan",
+                "description": "Approve or reject a submitted plan by "
+                               "request_id.",
+                "parameters": {"type": "object",
+                               "properties": {
+                                   "request_id": {"type": "string"},
+                                   "approve": {"type": "boolean"},
+                                   "feedback": {"type": "string"}},
+                               "required": ["request_id", "approve"]}
+            }},
+        ]
+
     @property
     def main_agent_tools(self) -> list:
-        """主智能体工具 = 全部工具 + sub_agent（分发子任务给子智能体）。"""
+        """团队模式工具集 = 全部工具（含团队工具）+ sub_agent。
+
+        仅在 `/teams` 进入团队模式时由主循环喂给 LLM。
+        """
         if self._main_agent_tools_cache is None:
             self._main_agent_tools_cache = [
                 *self.tools,
-                {"type": "function", "function": {
-                    "name": "sub_agent",
-                    "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有执行工具权限，但不包含 task 系列工具；任务看板只由主智能体维护。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。\n\n⚠️ 强制规则（必须遵守，违例会阻塞主循环浪费时间）：\n凡是「批量 / 全量 / 跨多个文件 / 跨整个目录 / 预计耗时 > 30 秒」的任务，**必须传 run_in_background=true** 丢到后台线程异步执行，立即返回任务 ID，结果通过后续轮次的 <task_notification> 收回。绝对不要同步等待这类任务完成。\n判断标准（命中任意一条就必须后台）：\n  - 涉及 ≥ 2 个文件 / 整个目录 / 全部 N 个 X\n  - prompt 含「全部 / 全量 / 批量 / 跑一遍 / 扫描 / 审计 / 构建 / 测试套件」等关键词\n  - 需要多步骤工具调用且总耗时可能 > 30 秒\n允许同步（run_in_background 默认 false）的场景：\n  - 单个文件的快速查询、单步工具调用\n  - 必须等前序结果才能继续的下一步操作\n\n如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率；串行时设为 false。注意：run_in_background 与 parallel 互斥——已传 run_in_background=true 时不要再传 parallel。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下全部 19 个 PDF 的标题和摘要\", run_in_background=true)  ← 批量全目录，必须后台\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")\n- sub_agent(prompt=\"跑全量测试并报告失败用例\", parallel=\"false\", run_in_background=true)",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "prompt": {"type": "string", "description": "给子智能体的任务描述，应具体说明要做什么"},
-                            "description": {"type": "string", "description": "任务的简短描述，用于日志记录"},
-                            "allowed_tools": {"type": "array", "items": {"type": "string"}, "description": "限制子智能体可用的工具名称列表。不设置则默认使用全部工具。例如 [\"bash\",\"read_file\",\"read_pdf\"] 限制为只读工具集"},
-                            "parallel": {"type": "boolean", "description": "是否与其他 sub_agent 并行执行。"},
-                            "run_in_background": {"type": "boolean", "default": False,
-                                "description": "True 时把子任务丢到后台线程异步执行，立即返回后台任务 ID；"
-                                               "结果通过 <task_notification> 在后续轮次通知。"
-                                               "与 parallel 互斥：传 True 时不再走并行/串行等待桶。"}
-                        },
-                        "required": ["prompt", "parallel"]
-                    }
-                }},
+                self._sub_agent_tool_def(),
             ]
         return self._main_agent_tools_cache
+
+    @property
+    def default_agent_tools(self) -> list:
+        """默认（子智能体）模式工具集 = 全部工具剔除团队工具 + sub_agent。
+
+        缺少团队工具的 schema，省 token，并避免模型误触发代价高昂的团队协作。
+        """
+        if self._default_agent_tools_cache is None:
+            non_team = [t for t in self.tools
+                        if t["function"]["name"] not in TEAM_TOOL_NAMES]
+            self._default_agent_tools_cache = [
+                *non_team, self._sub_agent_tool_def(),
+            ]
+        return self._default_agent_tools_cache
+
+    # ── sub_agent 工具定义（默认与团队模式共用）────────────────────
+    def _sub_agent_tool_def(self) -> dict:
+        """sub_agent 工具定义（分发子任务给通用型子智能体）。"""
+        return {"type": "function", "function": {
+            "name": "sub_agent",
+            "description": "分发子任务给通用型子智能体。子智能体拥有独立上下文（不污染主对话），共享文件系统，只返回最终摘要。子智能体默认拥有执行工具权限，但不包含 task 系列工具；任务看板只由主智能体维护。当任务需要多步骤操作、读取多个文件、收集信息或可能产生大量工具调用时使用。\n\n⚠️ 强制规则（必须遵守，违例会阻塞主循环浪费时间）：\n凡是「批量 / 全量 / 跨多个文件 / 跨整个目录 / 预计耗时 > 30 秒」的任务，**必须传 run_in_background=true** 丢到后台线程异步执行，立即返回任务 ID，结果通过后续轮次的 <task_notification> 收回。绝对不要同步等待这类任务完成。\n判断标准（命中任意一条就必须后台）：\n  - 涉及 ≥ 2 个文件 / 整个目录 / 全部 N 个 X\n  - prompt 含「全部 / 全量 / 批量 / 跑一遍 / 扫描 / 审计 / 构建 / 测试套件」等关键词\n  - 需要多步骤工具调用且总耗时可能 > 30 秒\n允许同步（run_in_background 默认 false）的场景：\n  - 单个文件的快速查询、单步工具调用\n  - 必须等前序结果才能继续的下一步操作\n\n如果多个子任务之间没有依赖关系，设置 parallel=true 让它们并行执行以提升效率；串行时设为 false。注意：run_in_background 与 parallel 互斥——已传 run_in_background=true 时不要再传 parallel。\n\n可通过 allowed_tools 限制子智能体的工具范围，例如只允许只读操作。\n\n示例：\n- sub_agent(prompt=\"读取 DRG_Docs 目录下全部 19 个 PDF 的标题和摘要\", run_in_background=true)  ← 批量全目录，必须后台\n- sub_agent(prompt=\"实现用户注册功能\", parallel=\"false\")\n- sub_agent(prompt=\"分析当前代码架构并设计重构方案\", parallel=\"false\")\n- sub_agent(prompt=\"只读方式搜索代码中的安全问题\", allowed_tools=[\"bash\",\"read_file\",\"read_pdf\"], parallel=\"true\")\n- sub_agent(prompt=\"跑全量测试并报告失败用例\", parallel=\"false\", run_in_background=true)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "给子智能体的任务描述，应具体说明要做什么"},
+                    "description": {"type": "string", "description": "任务的简短描述，用于日志记录"},
+                    "allowed_tools": {"type": "array", "items": {"type": "string"}, "description": "限制子智能体可用的工具名称列表。不设置则默认使用全部工具。例如 [\"bash\",\"read_file\",\"read_pdf\"] 限制为只读工具集"},
+                    "parallel": {"type": "boolean", "description": "是否与其他 sub_agent 并行执行。"},
+                    "run_in_background": {"type": "boolean", "default": False,
+                        "description": "True 时把子任务丢到后台线程异步执行，立即返回后台任务 ID；"
+                                       "结果通过 <task_notification> 在后续轮次通知。"
+                                       "与 parallel 互斥：传 True 时不再走并行/串行等待桶。"}
+                },
+                "required": ["prompt", "parallel"]
+            }
+        }}
 
     # ═══════════════════════════════════════════════════════════
     #  统一执行入口

@@ -27,9 +27,10 @@ from paths import INBOX_DIR
 from tools import ToolRegistry
 
 # ── 可调参数（遵循 .env 约定，见 AGENTS.md）──
-IDLE_POLL_INTERVAL = int(os.environ.get("IDLE_POLL_INTERVAL", "5"))   # 空闲轮询间隔（秒）
-IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "60"))              # 空闲超时时间（秒）
-TEAM_MAX_TOOL_ROUNDS = int(os.environ.get("TEAM_MAX_TOOL_ROUNDS", "10"))  # 每轮 WORK 最多 tool_use 轮数
+IDLE_POLL_INTERVAL = int(os.environ.get("IDLE_POLL_INTERVAL", "5"))   # 空闲等待的兜底周期（秒），配合 Event 即时唤醒
+IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "60"))              # 空闲超时时间（秒），超过则队友关闭
+TEAM_MAX_TOOL_ROUNDS = int(os.environ.get("TEAM_MAX_TOOL_ROUNDS", "5"))  # 每轮 WORK 最多 tool_use 轮数
+TEAM_MAX_TOKENS = int(os.environ.get("TEAM_MAX_TOKENS", "4096"))      # 队友每轮 LLM 生成的 max_tokens（聚焦小任务，宜小以提速）
 
 
 # ── Protocol State（智能体间协议状态，来自 s16）──
@@ -88,6 +89,8 @@ class TeammateManager:
         # s17：协议请求与活跃队友追踪（实例级）
         self.pending_requests: dict[str, ProtocolState] = {}
         self.active_teammates: dict[str, bool] = {}
+        # s17 优化：每队友一个唤醒事件，Lead 发消息即 set()，消除轮询唤醒延迟
+        self.wake_events: dict[str, threading.Event] = {}
 
     # ═══════════════════════════════════════════════════════════
     #  团队配置持久化（config.json）
@@ -135,6 +138,19 @@ class TeammateManager:
     #  协议机制：请求 ID 生成与响应关联（来自 s16）
     # ═══════════════════════════════════════════════════════════
 
+    def _send(self, sender: str, to: str, content: str,
+              msg_type: str = "message", extra: dict = None) -> str:
+        """统一发送封装：写入总线后立即 set 目标队友的唤醒事件。
+
+        目标为 lead（无唤醒事件）时 get 返回 None 安全跳过；目标为队友时
+        立刻唤醒，把协作握手延迟从轮询周期降到趋近 0。
+        """
+        result = self.bus.send(sender, to, content, msg_type, extra)
+        event = self.wake_events.get(to)
+        if event is not None:
+            event.set()
+        return result
+
     def new_request_id(self) -> str:
         """生成新的协议请求 ID。"""
         return f"req_{random.randint(0, 999999):06d}"
@@ -171,9 +187,21 @@ class TeammateManager:
                 if t.status == "pending" and not t.owner and tm._can_start(t.id)]
 
     def idle_poll(self, name: str, messages: list) -> str:
-        """空闲轮询循环（60s）。返回 'work'、'shutdown' 或 'timeout'。"""
-        for _ in range(IDLE_TIMEOUT // IDLE_POLL_INTERVAL):
-            time.sleep(IDLE_POLL_INTERVAL)
+        """空闲等待（被唤醒即时处理，否则超时兜底）。返回 'work'、'shutdown' 或 'timeout'。
+
+        s17 优化：用 per-teammate 唤醒事件 event.wait() 替代固定 time.sleep 轮询。
+        Lead 发消息到该队友时 _send() 会 set() 事件立刻唤醒，消除 0~IDLE_POLL_INTERVAL 的等待延迟；无消息时 event.wait() 为阻塞休眠，不空转 CPU。IDLE_POLL_INTERVAL
+        作为唤醒等待的兜底周期，IDLE_TIMEOUT 作为整体等待上限。
+        """
+        event = self.wake_events.get(name)
+        deadline = time.time() + IDLE_TIMEOUT
+        while time.time() < deadline:
+            # 有事件则阻塞等待被唤醒（_send set 后立即返回），无事件退化为固定间隔轮询
+            if event is not None:
+                event.wait(IDLE_POLL_INTERVAL)
+                event.clear()
+            else:
+                time.sleep(IDLE_POLL_INTERVAL)
 
             # 第一步：检查邮箱——优先处理协议消息
             inbox = self.bus.read_inbox(name)
@@ -182,7 +210,7 @@ class TeammateManager:
                 for msg in inbox:
                     if msg.get("type") == "shutdown_request":
                         req_id = msg.get("request_id", "")
-                        self.bus.send(name, "lead", "Shutting down gracefully.",
+                        self._send(name, "lead", "Shutting down gracefully.",
                                       "shutdown_response",
                                       {"request_id": req_id, "approve": True})
                         print(f"  \033[35m[protocol] {name} approved shutdown "
@@ -235,6 +263,7 @@ class TeammateManager:
         self._save_config()
 
         self.active_teammates[name] = True
+        self.wake_events[name] = threading.Event()   # 为此队友创建唤醒事件
         thread = threading.Thread(
             target=self._teammate_loop, args=(name, role, prompt),
             daemon=True,
@@ -251,7 +280,7 @@ class TeammateManager:
 
         if msg_type == "shutdown_request":
             # 处理关闭请求：自动批准并回复
-            self.bus.send(name, "lead", "Shutting down gracefully.",
+            self._send(name, "lead", "Shutting down gracefully.",
                           "shutdown_response",
                           {"request_id": req_id, "approve": True})
             print(f"  \033[35m[protocol] {name} approved shutdown "
@@ -309,18 +338,26 @@ class TeammateManager:
                 try:
                     response = self.llm_client.chat.completions.create(
                         model=self.model,
-                        messages=messages[-20:],
+                        messages=messages,
                         tools=self._teammate_tools(),
                         tool_choice="auto",
-                        max_tokens=8000,
+                        max_tokens=TEAM_MAX_TOKENS,
                     )
                 except Exception as e:
                     print(f"  \033[31m[teammate] {name} LLM error: {e}\033[0m")
                     break
 
                 response_msg = response.choices[0].message
-                messages.append(response_msg.model_dump())
                 tool_calls = response_msg.tool_calls or []
+                # 以 OpenAI 请求格式存 assistant 消息（仅保留 role/content/tool_calls，
+                # 去掉 model_dump() 混入的 refusal/audio/index 等响应字段）
+                assistant_msg = {"role": "assistant"}
+                if response_msg.content is not None:
+                    assistant_msg["content"] = response_msg.content
+                if tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        tc.model_dump() for tc in tool_calls]
+                messages.append(assistant_msg)
                 if response.choices[0].finish_reason != "tool_calls" or not tool_calls:
                     break  # 非工具调用 → 停止本轮
 
@@ -354,9 +391,10 @@ class TeammateManager:
                 if isinstance(content, str) and content.strip():
                     summary = content
                     break
-        self.bus.send(name, "lead", summary, "result")
+        self._send(name, "lead", summary, "result")
         self._update_member_status(name, "shutdown" if should_shutdown else "idle")
         self.active_teammates.pop(name, None)
+        self.wake_events.pop(name, None)
         print(f"  \033[32m[teammate] {name} finished\033[0m")
 
     # ═══════════════════════════════════════════════════════════
@@ -371,7 +409,7 @@ class TeammateManager:
         团队协议/任务工具是 teammate 角色独有，与 MessageBus / TaskManager /
         ProtocolState 绑定，保留在本地。
         """
-        wanted = {"bash", "run_read", "run_write"}
+        wanted = {"bash", "run_read", "run_write", "run_read_pdf"}
         base = [t for t in self.tools.base_tools
                 if t["function"]["name"] in wanted]
         protocol = [
@@ -417,8 +455,15 @@ class TeammateManager:
             return self.tools.run_read(args.get("path", ""), args.get("limit"))
         if tool_name == "run_write":
             return self.tools.run_write(args.get("path", ""), args.get("content", ""))
+        if tool_name == "run_read_pdf":
+            kwargs = {"path": args.get("path", "")}
+            if args.get("max_pages") is not None:
+                kwargs["max_pages"] = args["max_pages"]
+            if args.get("chars_per_page") is not None:
+                kwargs["chars_per_page"] = args["chars_per_page"]
+            return self.tools.run_read_pdf(**kwargs)
         if tool_name == "send_message":
-            self.bus.send(name, args.get("to", ""), args.get("content", ""))
+            self._send(name, args.get("to", ""), args.get("content", ""))
             return "Sent"
         if tool_name == "submit_plan":
             return self._teammate_submit_plan(name, args.get("plan", ""))
@@ -443,7 +488,7 @@ class TeammateManager:
             request_id=req_id, type="plan_approval",
             sender=from_name, target="lead",
             status="pending", payload=plan)
-        self.bus.send(from_name, "lead", plan,
+        self._send(from_name, "lead", plan,
                       "plan_approval_request",
                       {"request_id": req_id})
         return f"Plan submitted ({req_id}). Waiting for approval..."
@@ -459,7 +504,7 @@ class TeammateManager:
             request_id=req_id, type="shutdown",
             sender="lead", target=teammate,
             status="pending", payload="")
-        self.bus.send("lead", teammate, "Please shut down gracefully.",
+        self._send("lead", teammate, "Please shut down gracefully.",
                       "shutdown_request",
                       {"request_id": req_id})
         print(f"  \033[35m[protocol] shutdown_request → {teammate} "
@@ -468,7 +513,7 @@ class TeammateManager:
 
     def request_plan(self, teammate: str, task: str) -> str:
         """Lead 要求队友提交一份计划。"""
-        self.bus.send("lead", teammate, f"Please submit a plan for: {task}",
+        self._send("lead", teammate, f"Please submit a plan for: {task}",
                       "message")
         return f"Asked {teammate} to submit a plan"
 
@@ -481,7 +526,7 @@ class TeammateManager:
         if state.status != "pending":
             return f"Request {request_id} already {state.status}"
         state.status = "approved" if approve else "rejected"
-        self.bus.send("lead", state.sender,
+        self._send("lead", state.sender,
                       feedback or ("Approved" if approve else "Rejected"),
                       "plan_approval_response",
                       {"request_id": request_id, "approve": approve})
@@ -495,7 +540,7 @@ class TeammateManager:
 
     def send_message(self, to: str, content: str) -> str:
         """Lead 向队友发送普通消息。"""
-        self.bus.send("lead", to, content)
+        self._send("lead", to, content)
         return f"Sent to {to}"
 
     def consume_lead_inbox(self, route_protocol: bool = True) -> list[dict]:

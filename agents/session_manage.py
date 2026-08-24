@@ -169,13 +169,18 @@ class SessionManager:
         # 清理孤儿 AIMessage：上次进程在保存 AIMessage 后、ToolMessage 落盘前
         # 崩溃 / 被中断，导致 tool_calls 没有匹配的 tool 响应。重新加载整段历史
         # 直接回传 OpenAI 会触发 400 invalid_request_error。
-        messages = self._sanitize_orphan_tool_calls(messages)
+        messages, orphan_drops = self._sanitize_orphan_tool_calls(messages)
 
-        # 自愈：发现拼行/坏行时，重写文件为标准 JSONL
-        if repaired and messages:
+        # 自愈：发现拼行/坏行，或丢弃了孤儿消息时，把清理后的列表写回文件，
+        # 避免每次启动都重复剔除同一批干消息。
+        needs_rewrite = repaired or orphan_drops > 0
+        if needs_rewrite and messages:
             try:
                 self.save_session_history(session_file, messages)
-                print("\033[33m[会话修复] 检测到历史文件存在拼行，已自动重写为标准 JSONL\033[0m")
+                if repaired:
+                    print("\033[33m[会话修复] 检测到历史文件存在拼行，已自动重写为标准 JSONL\033[0m")
+                else:
+                    print(f"\033[33m[会话修复] 已丢弃 {orphan_drops} 条孤儿消息并写回历史文件\033[0m")
             except Exception as e:
                 print(f"\033[33m[会话修复] 重写历史文件失败: {e}\033[0m")
 
@@ -228,7 +233,7 @@ class SessionManager:
 
         return fixed
 
-    def _sanitize_orphan_tool_calls(self, messages: list) -> list:
+    def _sanitize_orphan_tool_calls(self, messages: list) -> tuple[list, int]:
         """
         清理孤儿 assistant 消息：带 tool_calls 但其后没有匹配 tool 消息的情况。
 
@@ -239,8 +244,12 @@ class SessionManager:
         本函数扫描消息列表，对每个带 tool_calls 的 assistant 消息，验证紧随其后
         的 tool 消息是否覆盖了全部 tool_call_id；缺失则丢弃该 assistant 消息
         以及它后面紧跟的任何错位 tool 消息。
+
+        Returns:
+            (清理后的消息列表, 丢弃的孤儿 assistant 消息条数)
         """
         sanitized = []
+        drops = 0
         i = 0
         while i < len(messages):
             msg = messages[i]
@@ -269,6 +278,7 @@ class SessionManager:
                 else:
                     missing = expected_ids - found_ids
                     dropped_tools = j - i - 1
+                    drops += 1
                     print(
                         f"\033[33m[会话修复] 丢弃孤儿 assistant 消息 "
                         f"（缺失 tool 响应: {sorted(missing)}，"
@@ -278,7 +288,7 @@ class SessionManager:
             else:
                 sanitized.append(msg)
                 i += 1
-        return sanitized
+        return sanitized, drops
 
     def _message_to_json_row(self, message) -> dict:
         """将 OpenAI JSON 格式消息转换为 jsonl 行（与 load_session_history 读取结构保持一致）。"""
