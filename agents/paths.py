@@ -16,8 +16,14 @@ from pathlib import Path
 # ── 根目录（启动 agent 时的当前工作目录） ──────────────────────────
 ROOT_DIR = Path.cwd()
 
+# 应用自身 home 目录（存放 skills / worktree / 项目元数据 / 应用配置）
+HOME_DIR = ROOT_DIR / "WorkSpace/HomeDir"
+
 # 技能目录
-SKILLS_DIR = ROOT_DIR / "skills"
+SKILLS_DIR = HOME_DIR / "skills"
+
+# worktree 目录（git worktree 实验分支挂载点）
+WORKTREE_DIR = HOME_DIR / "worktrees"
 
 # 工作目录（所有工具操作的沙盒根）
 WORKDIR = ROOT_DIR / "WorkSpace/task1"

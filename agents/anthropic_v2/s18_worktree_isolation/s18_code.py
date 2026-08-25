@@ -62,7 +62,7 @@ class Task:
     status: str
     owner: str | None
     blockedBy: list[str]
-    worktree: str | None = None      # s18: bound worktree name
+    worktree: str | None = None      # s18: 绑定的 worktree 名称（str | None）
 
 
 def _task_path(task_id: str) -> Path:
@@ -145,16 +145,18 @@ def complete_task(task_id: str) -> str:
     return msg
 
 
-# ── Worktree System (s18 new) ──
+# ── Worktree 系统（s18 新增）──
 
+# 所有 worktree 统一放在主仓库下的 .worktrees/ 目录，每个子目录对应一个独立分支的检出
 WORKTREES_DIR = WORKDIR / ".worktrees"
 WORKTREES_DIR.mkdir(exist_ok=True)
 
+# worktree 名称合法性正则：仅允许字母/数字/点/下划线/连字符，长度 1-64
 VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 
 
 def validate_worktree_name(name: str) -> str | None:
-    """Return error message if invalid, None if valid."""
+    """校验 worktree 名称。非法时返回错误信息，合法返回 None。"""
     if not name:
         return "Worktree name cannot be empty"
     if name == "." or name == "..":
@@ -166,7 +168,7 @@ def validate_worktree_name(name: str) -> str | None:
 
 
 def run_git(args: list[str]) -> tuple[bool, str]:
-    """Run git command. Return (ok, output)."""
+    """执行 git 命令，返回 (是否成功, 输出)。"""
     try:
         r = subprocess.run(["git"] + args, cwd=WORKDIR,
                            capture_output=True, text=True, timeout=30)
@@ -178,7 +180,7 @@ def run_git(args: list[str]) -> tuple[bool, str]:
 
 
 def log_event(event_type: str, worktree_name: str, task_id: str = ""):
-    """Append a lifecycle event to events.jsonl."""
+    """将生命周期事件（create/remove/keep）追加写入 events.jsonl，供审计/复盘。"""
     event = {"type": event_type, "worktree": worktree_name,
              "task_id": task_id, "ts": time.time()}
     events_file = WORKTREES_DIR / "events.jsonl"
@@ -187,17 +189,24 @@ def log_event(event_type: str, worktree_name: str, task_id: str = ""):
 
 
 def create_worktree(name: str, task_id: str = "") -> str:
-    """Create a git worktree with a dedicated branch. Optionally bind to a task."""
+    """创建带专属分支的 git worktree，可选地绑定到某个任务。
+
+    命令 `git worktree add <路径> -b wt/<name> HEAD`：
+    - 在 .worktrees/<name> 检出一份工作副本；
+    - 从当前 HEAD 新建分支 wt/<name>，实现与主目录的隔离。
+    """
     err = validate_worktree_name(name)
     if err:
         return f"Error: {err}"
     path = WORKTREES_DIR / name
     if path.exists():
         return f"Worktree '{name}' already exists at {path}"
+    # 实际执行 git worktree add，-b 指定新分支名
     ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
     if not ok:
         return f"Git error: {result}"
     if task_id:
+        # 若带了 task_id 则把任务与 worktree 绑定，稍后队友可在该目录作业
         bind_task_to_worktree(task_id, name)
     log_event("create", name, task_id)
     print(f"  \033[33m[worktree] created: {name} at {path}\033[0m")
@@ -205,7 +214,11 @@ def create_worktree(name: str, task_id: str = "") -> str:
 
 
 def bind_task_to_worktree(task_id: str, worktree_name: str):
-    """Write worktree field to task. Keep status as pending for auto-claim."""
+    """把 worktree 名称写进任务的 worktree 字段。
+
+    注意此处保持任务的 status 为 pending，不自动领取，
+    等待队友后续主动去 claim。
+    """
     task = load_task(task_id)
     task.worktree = worktree_name
     save_task(task)
@@ -213,11 +226,16 @@ def bind_task_to_worktree(task_id: str, worktree_name: str):
 
 
 def _count_worktree_changes(path: Path) -> tuple[int, int]:
-    """Count uncommitted files and commits in a worktree."""
+    """统计某个 worktree 内的未提交文件数与未推送提交数。
+
+    返回 (files, commits)；统计出错时返回 (-1, -1) 表示无法判定。
+    """
     try:
+        # --porcelain 输出便于解析，统计出有多少个未提交变更文件
         r1 = subprocess.run(["git", "status", "--porcelain"],
                             cwd=path, capture_output=True, text=True, timeout=10)
         files = len([l for l in r1.stdout.strip().splitlines() if l.strip()])
+        # @{push}..HEAD 区间内的提交即为尚未推送的本地提交
         r2 = subprocess.run(["git", "log", "@{push}..HEAD", "--oneline"],
                             cwd=path, capture_output=True, text=True, timeout=10)
         commits = len([l for l in r2.stdout.strip().splitlines() if l.strip()])
@@ -227,7 +245,7 @@ def _count_worktree_changes(path: Path) -> tuple[int, int]:
 
 
 def remove_worktree(name: str, discard_changes: bool = False) -> str:
-    """Remove worktree. Refuses if uncommitted changes unless discard_changes."""
+    """移除 worktree。除非 discard_changes=True，否则拒绝移除有未提交变更的 worktree。"""
     err = validate_worktree_name(name)
     if err:
         return err
@@ -235,6 +253,7 @@ def remove_worktree(name: str, discard_changes: bool = False) -> str:
     if not path.exists():
         return f"Worktree '{name}' not found"
     if not discard_changes:
+        # 安全移除：先检查是否有未提交改动/未推送提交
         files, commits = _count_worktree_changes(path)
         if files < 0:
             return (f"Cannot verify worktree '{name}' status. "
@@ -244,9 +263,11 @@ def remove_worktree(name: str, discard_changes: bool = False) -> str:
                     f"and {commits} unpushed commit(s). "
                     "Use discard_changes=true to force removal, "
                     "or keep_worktree to preserve for review.")
+    # 真正移除 worktree 目录（加 --force 以便在有改动时也能强制删）
     ok1, _ = run_git(["worktree", "remove", str(path), "--force"])
     if not ok1:
         return f"Failed to remove worktree directory for '{name}'"
+    # 一并删除它对应的专属分支 wt/<name>（-D 强制删除）
     run_git(["branch", "-D", f"wt/{name}"])
     log_event("remove", name)
     print(f"  \033[33m[worktree] removed: {name}\033[0m")
@@ -254,7 +275,7 @@ def remove_worktree(name: str, discard_changes: bool = False) -> str:
 
 
 def keep_worktree(name: str) -> str:
-    """Keep worktree for manual review. Branch preserved."""
+    """保留 worktree 供人工复核，分支不会删除。"""
     err = validate_worktree_name(name)
     if err:
         return err
@@ -467,6 +488,7 @@ def idle_poll(agent_name: str, messages: list,
             task_data = unclaimed[0]
             result = claim_task(task_data["id"], agent_name)
             if "Claimed" in result:
+                # 若任务绑定了 worktree，把工作目录告知队友，引导其在该目录作业
                 wt_info = ""
                 if task_data.get("worktree"):
                     wt_path = WORKTREES_DIR / task_data["worktree"]
@@ -493,7 +515,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
     system = (f"You are '{name}', a {role}. "
               f"Use tools to complete tasks. "
               f"You can list and claim tasks from the board. "
-              f"If a task has a worktree, work in that directory.")
+              f"If a task has a worktree, work in that directory.")  # 绑定 worktree 的任务需到对应目录作业
 
     def handle_inbox_message(name: str, msg: dict, messages: list):
         msg_type = msg.get("type", "message")
@@ -519,20 +541,24 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         return False
 
     def run():
-        # Track current worktree for this teammate's cwd
+        # 记录当前队友绑定的 worktree 路径，后续 bash/read/write 以此为工作目录
         wt_ctx = {"path": None}
 
         def _wt_cwd() -> Path | None:
+            # 取出当前 worktree 路径；未绑定时返回 None（退回主仓库目录）
             p = wt_ctx["path"]
             return Path(p) if p else None
 
         def _run_bash(command: str) -> str:
+            # 在绑定的 worktree 目录下执行 shell 命令
             return run_bash(command, cwd=_wt_cwd())
 
         def _run_read(path: str) -> str:
+            # 在绑定的 worktree 目录下读文件
             return run_read(path, cwd=_wt_cwd())
 
         def _run_write(path: str, content: str) -> str:
+            # 在绑定的 worktree 目录下写文件
             return run_write(path, content, cwd=_wt_cwd())
 
         def _run_list_tasks():
@@ -547,7 +573,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         def _run_claim_task(task_id: str):
             result = claim_task(task_id, owner=name)
             if "Claimed" in result:
-                # Set worktree cwd if task has one
+                # 领取成功后，若任务绑定了 worktree 则切换工作目录到该 worktree
                 task = load_task(task_id)
                 if task.worktree:
                     wt_ctx["path"] = str(WORKTREES_DIR / task.worktree)
@@ -557,6 +583,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
 
         def _run_complete_task(task_id: str):
             result = complete_task(task_id)
+            # 任务完成，重置工作目录回主仓库
             wt_ctx["path"] = None
             return result
 
@@ -739,8 +766,9 @@ def run_review_plan(request_id: str, approve: bool,
     return f"Plan {'approved' if approve else 'rejected'} ({request_id})"
 
 
-# ── Lead Worktree Tools (s18 new) ──
+# ── Lead 的 Worktree 工具（s18 新增）──
 
+# 给主智能体（Lead）暴露的 3 个 worktree 工具，直接转发到上面的底层实现
 def run_create_worktree(name: str, task_id: str = "") -> str:
     return create_worktree(name, task_id)
 
@@ -885,7 +913,7 @@ TOOLS = [
                           "approve": {"type": "boolean"},
                           "feedback": {"type": "string"}},
                       "required": ["request_id", "approve"]}},
-    # s18 new: worktree tools
+    # s18 新增：worktree 相关工具（创建/移除/保留）
     {"name": "create_worktree",
      "description": "Create an isolated git worktree with its own branch.",
      "input_schema": {"type": "object",
