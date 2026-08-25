@@ -1,0 +1,563 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 3200" width="1800" height="3200" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#37474F"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1976D2"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#388E3C"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7B1FA2"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#F57C00"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C2185B"/>
+    </marker>
+  </defs>
+
+  <!-- ============== Background ============== -->
+  <rect width="1800" height="3200" fill="#FAFAFA"/>
+
+  <!-- ============== Title ============== -->
+  <rect x="0" y="0" width="1800" height="100" fill="#1E3A5F"/>
+  <text x="50" y="50" font-size="34" font-weight="bold" fill="white">s14 Cron Scheduler · 完整逻辑流程图</text>
+  <text x="50" y="82" font-size="15" fill="#B0C4DE">生产者-队列-消费者 三层解耦 · 独立 daemon 线程 · 4 层架构完整梳理</text>
+  <text x="1700" y="50" font-size="14" fill="#B0C4DE" text-anchor="end">agents/anthropic_v2/s14_cron_scheduler/s14_code.py</text>
+  <text x="1700" y="82" font-size="14" fill="#B0C4DE" text-anchor="end">共 894 行 · 3 个 daemon 线程 + 1 个主线程</text>
+
+  <!-- ============== Legend ============== -->
+  <g transform="translate(50, 130)">
+    <text x="0" y="0" font-size="16" font-weight="bold" fill="#333">图例 (Legend)</text>
+    <rect x="0" y="15" width="22" height="22" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" rx="4"/>
+    <text x="32" y="32" font-size="13" fill="#333">L1 调度线程 (生产者)</text>
+    <rect x="240" y="15" width="22" height="22" fill="#FFF3E0" stroke="#F57C00" stroke-width="2" rx="4"/>
+    <text x="272" y="32" font-size="13" fill="#333">L2 cron_queue (缓冲)</text>
+    <rect x="460" y="15" width="22" height="22" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="2" rx="4"/>
+    <text x="492" y="32" font-size="13" fill="#333">L3 队列处理器 (消费者)</text>
+    <rect x="710" y="15" width="22" height="22" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="4"/>
+    <text x="742" y="32" font-size="13" fill="#333">L4 agent_loop (实际执行)</text>
+    <rect x="950" y="15" width="22" height="22" fill="#FCE4EC" stroke="#C2185B" stroke-width="2" rx="4"/>
+    <text x="982" y="32" font-size="13" fill="#333">用户输入 REPL</text>
+    <rect x="1140" y="15" width="22" height="22" fill="#FFF9C4" stroke="#F9A825" stroke-width="2" rx="4"/>
+    <text x="1172" y="32" font-size="13" fill="#333">持久化 / 共享状态</text>
+    <rect x="1360" y="15" width="22" height="22" fill="#ECEFF1" stroke="#455A64" stroke-width="2" rx="4"/>
+    <text x="1392" y="32" font-size="13" fill="#333">模块级 / 工具层</text>
+  </g>
+
+  <!-- ============== Section A: 启动阶段 ============== -->
+  <g transform="translate(0, 210)">
+    <text x="50" y="0" font-size="24" font-weight="bold" fill="#1E3A5F">一、启动阶段 (Process Bootstrap)</text>
+    <line x1="50" y1="12" x2="1750" y2="12" stroke="#1E3A5F" stroke-width="2"/>
+    <text x="50" y="35" font-size="13" fill="#666">从 python 解释器执行到 4 个线程全部就位的过程。模块顶层代码 (line 619-625) 在 __main__ 之前先跑。</text>
+
+    <!-- Step 1: module-level -->
+    <g transform="translate(50, 60)">
+      <rect x="0" y="0" width="1700" height="90" fill="#ECEFF1" stroke="#455A64" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#263238">① 模块级定义 (line 25-616)</text>
+      <text x="20" y="52" font-size="13" font-family="monospace" fill="#333">import threading, time | DURABLE_PATH = WORKDIR/".scheduled_tasks.json"</text>
+      <text x="20" y="72" font-size="13" font-family="monospace" fill="#333">scheduled_jobs: dict | cron_queue: list | _last_fired: dict | cron_lock | agent_lock</text>
+    </g>
+
+    <path d="M 900 160 L 900 185" stroke="#37474F" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+    <!-- Step 2: load durable -->
+    <g transform="translate(50, 195)">
+      <rect x="0" y="0" width="1700" height="110" fill="#FFF9C4" stroke="#F9A825" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#F57F17">② load_durable_jobs() — 模块顶层执行 (line 623)</text>
+      <text x="20" y="52" font-size="13" fill="#333">从 .scheduled_tasks.json 反序列化 → 校验 cron 表达式 → 写入 scheduled_jobs</text>
+      <text x="20" y="72" font-size="13" font-family="monospace" fill="#666">if not DURABLE_PATH.exists(): return   # 首次运行静默跳过</text>
+      <text x="20" y="93" font-size="12" font-style="italic" fill="#C2185B">⚠ 必须在启动调度线程之前完成 — 否则启动瞬间的 1 秒可能错过本应触发的任务</text>
+    </g>
+
+    <path d="M 900 315 L 900 340" stroke="#1976D2" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+
+    <!-- Step 3: start scheduler thread (module level) -->
+    <g transform="translate(50, 350)">
+      <rect x="0" y="0" width="1700" height="110" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#0D47A1">③ 启动 L1 调度线程 (模块顶层 line 624) — ⭐「自己独立启动」</text>
+      <text x="20" y="55" font-size="13" font-family="monospace" fill="#333">threading.Thread(target=cron_scheduler_loop, daemon=True).start()</text>
+      <text x="20" y="78" font-size="13" fill="#333">daemon=True：主进程退出时自动结束，无需手动 join</text>
+      <text x="20" y="98" font-size="12" font-style="italic" fill="#0D47A1">📌 此处是模块顶层执行 — 即便没人调用 __main__，这个线程也会跑（只要进程没退出）</text>
+    </g>
+
+    <path d="M 900 470 L 900 495" stroke="#37474F" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+    <!-- Step 4: __main__ guard -->
+    <g transform="translate(50, 505)">
+      <rect x="0" y="0" width="1700" height="80" fill="#FCE4EC" stroke="#C2185B" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#880E4F">④ __main__ 入口 (line 878-880)</text>
+      <text x="20" y="52" font-size="13" font-family="monospace" fill="#333">if __name__ == "__main__":   print("s14: cron scheduler")</text>
+      <text x="20" y="72" font-size="12" font-style="italic" fill="#880E4F">📌 此时进程内已有 1 个 daemon 线程在跑（scheduler），即将启动第 2 个</text>
+    </g>
+
+    <path d="M 900 595 L 900 620" stroke="#7B1FA2" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+
+    <!-- Step 5: start queue processor -->
+    <g transform="translate(50, 630)">
+      <rect x="0" y="0" width="1700" height="100" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#4A148C">⑤ 启动 L3 队列处理器 (line 883) — 在 main 函数中启动</text>
+      <text x="20" y="55" font-size="13" font-family="monospace" fill="#333">threading.Thread(target=queue_processor_loop, daemon=True).start()</text>
+      <text x="20" y="78" font-size="13" fill="#333">至此 s14 的「调度线程 + 队列 + 队列处理器」三件套全部就位</text>
+      <text x="20" y="98" font-size="12" font-style="italic" fill="#4A148C">📌 调度线程已在模块顶部启动；此处只需补齐消费者侧</text>
+    </g>
+
+    <path d="M 900 740 L 900 765" stroke="#C2185B" stroke-width="2" fill="none" marker-end="url(#arrowRed)"/>
+
+    <!-- Step 6: REPL -->
+    <g transform="translate(50, 775)">
+      <rect x="0" y="0" width="1700" height="130" fill="#FCE4EC" stroke="#C2185B" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#880E4F">⑥ 主线程: REPL 用户输入循环 (line 885-894) — 在 main 函数中跑</text>
+      <text x="20" y="55" font-size="13" font-family="monospace" fill="#333">while True:</text>
+      <text x="40" y="75" font-size="13" font-family="monospace" fill="#333">try: query = input("s14 >> ")</text>
+      <text x="40" y="95" font-size="13" font-family="monospace" fill="#333">with agent_lock:                # ⚡ 持锁 → 队列处理器自动让出</text>
+      <text x="60" y="113" font-size="13" font-family="monospace" fill="#333">run_agent_turn_locked(query)</text>
+    </g>
+
+    <text x="900" y="940" font-size="14" font-weight="bold" fill="#1E3A5F" text-anchor="middle">▼ 启动完成，进入运行时 4 层架构 ▼</text>
+  </g>
+
+  <!-- ============== Section B: 4 层运行时架构 ============== -->
+  <g transform="translate(0, 1170)">
+    <text x="50" y="0" font-size="24" font-weight="bold" fill="#1E3A5F">二、4 层运行时架构 (Runtime Architecture)</text>
+    <line x1="50" y1="12" x2="1750" y2="12" stroke="#1E3A5F" stroke-width="2"/>
+    <text x="50" y="35" font-size="13" fill="#666">数据流方向：时间 → L1 调度 → L2 队列 → L3 处理器 → L4 Agent → LLM。两条用户路径并行。</text>
+
+    <!-- 4 swimlanes as columns -->
+    <!-- Column headers -->
+    <rect x="50" y="55" width="400" height="35" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" rx="6"/>
+    <text x="250" y="79" font-size="14" font-weight="bold" fill="#0D47A1" text-anchor="middle">L1 · 调度线程 (生产者)</text>
+
+    <rect x="470" y="55" width="400" height="35" fill="#FFF3E0" stroke="#F57C00" stroke-width="2" rx="6"/>
+    <text x="670" y="79" font-size="14" font-weight="bold" fill="#E65100" text-anchor="middle">L2 · cron_queue (缓冲)</text>
+
+    <rect x="890" y="55" width="400" height="35" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="2" rx="6"/>
+    <text x="1090" y="79" font-size="14" font-weight="bold" fill="#4A148C" text-anchor="middle">L3 · 队列处理器 (消费者)</text>
+
+    <rect x="1310" y="55" width="400" height="35" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="6"/>
+    <text x="1510" y="79" font-size="14" font-weight="bold" fill="#1B5E20" text-anchor="middle">L4 · agent_loop (实际执行)</text>
+
+    <!-- ====== L1 Scheduler Thread ====== -->
+    <g transform="translate(50, 100)">
+      <rect x="0" y="0" width="400" height="640" fill="#E3F2FD" stroke="#1976D2" stroke-width="1" rx="6"/>
+
+      <rect x="15" y="15" width="370" height="50" fill="white" stroke="#1976D2" stroke-width="1" rx="4"/>
+      <text x="200" y="35" font-size="13" font-weight="bold" fill="#0D47A1" text-anchor="middle">cron_scheduler_loop()</text>
+      <text x="200" y="52" font-size="11" fill="#666" text-anchor="middle">daemon 线程 · 每 1s 轮询</text>
+
+      <rect x="15" y="75" width="370" height="40" fill="white" stroke="#1976D2" stroke-width="1" rx="4"/>
+      <text x="25" y="93" font-size="12" font-family="monospace" fill="#333">time.sleep(1)</text>
+      <text x="25" y="108" font-size="12" font-family="monospace" fill="#333">now = datetime.now()</text>
+
+      <rect x="15" y="125" width="370" height="35" fill="white" stroke="#1976D2" stroke-width="1" rx="4"/>
+      <text x="25" y="146" font-size="12" font-family="monospace" fill="#333">minute_marker = "YYYY-MM-DD HH:MM"</text>
+
+      <rect x="15" y="170" width="370" height="35" fill="white" stroke="#1976D2" stroke-width="1" rx="4"/>
+      <text x="200" y="193" font-size="12" font-weight="bold" fill="#0D47A1" text-anchor="middle">↓ acquire cron_lock ↓</text>
+
+      <rect x="15" y="215" width="370" height="50" fill="white" stroke="#1976D2" stroke-width="1" rx="4"/>
+      <text x="25" y="233" font-size="12" font-family="monospace" fill="#333">for job in list(scheduled_jobs):</text>
+      <text x="25" y="250" font-size="11" font-style="italic" fill="#666">⚡ list() 复制防迭代中修改</text>
+
+      <polygon points="200,275 215,295 185,295" fill="white" stroke="#1976D2" stroke-width="1"/>
+      <text x="200" y="290" font-size="11" font-weight="bold" fill="#0D47A1" text-anchor="middle">cron_matches?</text>
+
+      <rect x="15" y="305" width="370" height="50" fill="white" stroke="#1976D2" stroke-width="1" rx="4"/>
+      <text x="25" y="323" font-size="12" font-family="monospace" fill="#333">if _last_fired[id] != marker:</text>
+      <text x="25" y="340" font-size="12" font-family="monospace" fill="#333">  cron_queue.append(job)</text>
+
+      <polygon points="200,365 215,385 185,385" fill="white" stroke="#1976D2" stroke-width="1"/>
+      <text x="200" y="380" font-size="11" font-weight="bold" fill="#0D47A1" text-anchor="middle">recurring?</text>
+
+      <rect x="15" y="395" width="370" height="40" fill="white" stroke="#1976D2" stroke-width="1" rx="4"/>
+      <text x="25" y="413" font-size="12" font-family="monospace" fill="#333">if not recurring:</text>
+      <text x="25" y="428" font-size="12" font-family="monospace" fill="#333">  scheduled_jobs.pop(id)</text>
+
+      <rect x="15" y="445" width="370" height="60" fill="#FFEBEE" stroke="#C2185B" stroke-width="1" rx="4"/>
+      <text x="25" y="465" font-size="11" font-weight="bold" fill="#C2185B">try / except 包整个 for 体</text>
+      <text x="25" y="482" font-size="11" fill="#C2185B">一个坏任务不能拖垮调度器</text>
+      <text x="25" y="498" font-size="11" font-family="monospace" fill="#666">finally: release cron_lock</text>
+
+      <rect x="15" y="515" width="370" height="50" fill="#FFF3E0" stroke="#F57C00" stroke-width="2" rx="4"/>
+      <text x="200" y="535" font-size="12" font-weight="bold" fill="#E65100" text-anchor="middle">→ 写入 cron_queue</text>
+      <text x="200" y="552" font-size="11" fill="#E65100" text-anchor="middle">(横向箭头到 L2)</text>
+    </g>
+
+    <!-- ====== L2 cron_queue ====== -->
+    <g transform="translate(470, 100)">
+      <rect x="0" y="0" width="400" height="640" fill="#FFF3E0" stroke="#F57C00" stroke-width="1" rx="6"/>
+
+      <rect x="15" y="15" width="370" height="50" fill="white" stroke="#F57C00" stroke-width="1" rx="4"/>
+      <text x="200" y="35" font-size="13" font-weight="bold" fill="#E65100" text-anchor="middle">cron_queue: list[CronJob]</text>
+      <text x="200" y="52" font-size="11" fill="#666" text-anchor="middle">线程安全列表 · cron_lock 保护</text>
+
+      <rect x="15" y="80" width="370" height="100" fill="white" stroke="#F57C00" stroke-width="1" rx="4"/>
+      <text x="25" y="100" font-size="12" font-weight="bold" fill="#E65100">数据项结构 (CronJob):</text>
+      <text x="25" y="118" font-size="11" font-family="monospace" fill="#333">• id: cron_xxxxxx</text>
+      <text x="25" y="134" font-size="11" font-family="monospace" fill="#333">• cron: "0 9 * * *"</text>
+      <text x="25" y="150" font-size="11" font-family="monospace" fill="#333">• prompt: str</text>
+      <text x="25" y="166" font-size="11" font-family="monospace" fill="#333">• recurring: bool</text>
+
+      <rect x="15" y="195" width="370" height="80" fill="white" stroke="#F57C00" stroke-width="1" rx="4"/>
+      <text x="25" y="215" font-size="12" font-weight="bold" fill="#E65100">写入 (生产者):</text>
+      <text x="25" y="233" font-size="11" font-family="monospace" fill="#333">with cron_lock:</text>
+      <text x="25" y="249" font-size="11" font-family="monospace" fill="#333">  cron_queue.append(job)</text>
+      <text x="25" y="265" font-size="11" font-style="italic" fill="#666">L1 调度线程</text>
+
+      <rect x="15" y="290" width="370" height="80" fill="white" stroke="#F57C00" stroke-width="1" rx="4"/>
+      <text x="25" y="310" font-size="12" font-weight="bold" fill="#E65100">读取 (消费者):</text>
+      <text x="25" y="328" font-size="11" font-family="monospace" fill="#333">def consume_cron_queue():</text>
+      <text x="25" y="344" font-size="11" font-family="monospace" fill="#333">  with cron_lock:</text>
+      <text x="25" y="360" font-size="11" font-family="monospace" fill="#333">    fired = list(cron_queue); queue.clear()</text>
+
+      <rect x="15" y="385" width="370" height="60" fill="white" stroke="#F57C00" stroke-width="1" rx="4"/>
+      <text x="25" y="405" font-size="12" font-weight="bold" fill="#E65100">非破坏性查询:</text>
+      <text x="25" y="423" font-size="11" font-family="monospace" fill="#333">def has_cron_queue() -> bool:</text>
+      <text x="25" y="439" font-size="11" font-family="monospace" fill="#333">  with cron_lock: return bool(cron_queue)</text>
+
+      <rect x="15" y="460" width="370" height="60" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="200" y="480" font-size="12" font-weight="bold" fill="#4A148C" text-anchor="middle">← L3 读取 · L1 写入</text>
+      <text x="200" y="500" font-size="11" fill="#4A148C" text-anchor="middle">解耦调度与执行</text>
+      <text x="200" y="515" font-size="11" font-style="italic" fill="#666" text-anchor="middle">(调度线程不会因 agent 阻塞而卡住)</text>
+
+      <rect x="15" y="535" width="370" height="90" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="4"/>
+      <text x="200" y="555" font-size="12" font-weight="bold" fill="#1B5E20" text-anchor="middle">→ L4 一次性 drain</text>
+      <text x="25" y="580" font-size="11" font-family="monospace" fill="#333">fired = consume_cron_queue()</text>
+      <text x="25" y="596" font-size="11" font-family="monospace" fill="#333">for j in fired:</text>
+      <text x="25" y="612" font-size="11" font-family="monospace" fill="#333">  msgs.append({role:user, "[Scheduled] ..."})</text>
+    </g>
+
+    <!-- ====== L3 Queue Processor ====== -->
+    <g transform="translate(890, 100)">
+      <rect x="0" y="0" width="400" height="640" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="1" rx="6"/>
+
+      <rect x="15" y="15" width="370" height="50" fill="white" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="200" y="35" font-size="13" font-weight="bold" fill="#4A148C" text-anchor="middle">queue_processor_loop()</text>
+      <text x="200" y="52" font-size="11" fill="#666" text-anchor="middle">daemon 线程 · 每 0.2s 轮询</text>
+
+      <rect x="15" y="75" width="370" height="35" fill="white" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="200" y="98" font-size="12" font-weight="bold" fill="#4A148C" text-anchor="middle">time.sleep(0.2)</text>
+
+      <polygon points="200,120 215,140 185,140" fill="white" stroke="#7B1FA2" stroke-width="1"/>
+      <text x="200" y="135" font-size="11" font-weight="bold" fill="#4A148C" text-anchor="middle">has_cron_queue?</text>
+
+      <rect x="15" y="150" width="370" height="40" fill="white" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="25" y="170" font-size="11" font-style="italic" fill="#666">空 → continue (本轮放弃)</text>
+
+      <rect x="15" y="200" width="370" height="50" fill="white" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="25" y="220" font-size="12" font-weight="bold" fill="#4A148C">非阻塞抢 agent_lock:</text>
+      <text x="25" y="238" font-size="11" font-family="monospace" fill="#333">agent_lock.acquire(blocking=False)</text>
+
+      <polygon points="200,260 215,280 185,280" fill="white" stroke="#7B1FA2" stroke-width="1"/>
+      <text x="200" y="275" font-size="11" font-weight="bold" fill="#4A148C" text-anchor="middle">抢到锁?</text>
+
+      <rect x="15" y="290" width="370" height="35" fill="white" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="200" y="313" font-size="11" font-style="italic" fill="#C2185B" text-anchor="middle">否 → 用户正在用 agent → continue</text>
+
+      <rect x="15" y="335" width="370" height="40" fill="white" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="200" y="358" font-size="12" font-weight="bold" fill="#4A148C" text-anchor="middle">↓ 双重检查 has_cron_queue ↓</text>
+
+      <rect x="15" y="385" width="370" height="50" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="4"/>
+      <text x="200" y="405" font-size="12" font-weight="bold" fill="#1B5E20" text-anchor="middle">→ run_agent_turn_locked()</text>
+      <text x="200" y="425" font-size="11" font-style="italic" fill="#1B5E20" text-anchor="middle">调到 L4 agent_loop</text>
+
+      <rect x="15" y="445" width="370" height="60" fill="white" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="200" y="465" font-size="12" font-weight="bold" fill="#4A148C" text-anchor="middle">try / finally</text>
+      <text x="200" y="485" font-size="11" font-family="monospace" fill="#333">finally: agent_lock.release()</text>
+      <text x="200" y="500" font-size="11" font-style="italic" fill="#C2185B" text-anchor="middle">⚠ 任何分支都要 release</text>
+
+      <rect x="15" y="515" width="370" height="100" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="200" y="535" font-size="12" font-weight="bold" fill="#4A148C" text-anchor="middle">设计哲学</text>
+      <text x="25" y="555" font-size="11" fill="#333">• 非阻塞抢锁 → 不会和用户抢资源</text>
+      <text x="25" y="572" font-size="11" fill="#333">• 0.2s 轮询 → 简单可靠</text>
+      <text x="25" y="589" font-size="11" fill="#333">• 双重检查 → 避免 TOCTOU</text>
+      <text x="25" y="606" font-size="11" fill="#333">• 抢不到就放弃 → 不会饿死</text>
+    </g>
+
+    <!-- ====== L4 agent_loop ====== -->
+    <g transform="translate(1310, 100)">
+      <rect x="0" y="0" width="400" height="640" fill="#E8F5E9" stroke="#388E3C" stroke-width="1" rx="6"/>
+
+      <rect x="15" y="15" width="370" height="50" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="200" y="35" font-size="13" font-weight="bold" fill="#1B5E20" text-anchor="middle">agent_loop(messages, context)</text>
+      <text x="200" y="52" font-size="11" fill="#666" text-anchor="middle">真正的「消费者」</text>
+
+      <rect x="15" y="75" width="370" height="40" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="200" y="98" font-size="12" font-weight="bold" fill="#1B5E20" text-anchor="middle">while True:  ← 主循环</text>
+
+      <rect x="15" y="125" width="370" height="60" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="25" y="145" font-size="12" font-weight="bold" fill="#1B5E20">ⓐ 消费 cron 队列:</text>
+      <text x="25" y="163" font-size="11" font-family="monospace" fill="#333">fired = consume_cron_queue()</text>
+      <text x="25" y="178" font-size="11" font-family="monospace" fill="#333">for j in fired: msgs.append(...)</text>
+
+      <rect x="15" y="195" width="370" height="55" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="25" y="215" font-size="11" font-family="monospace" fill="#333">{"role": "user", "content":</text>
+      <text x="25" y="232" font-size="11" font-family="monospace" fill="#C2185B">         f"[Scheduled] {j.prompt}"}</text>
+      <text x="25" y="246" font-size="10" font-style="italic" fill="#666">[Scheduled] 前缀让模型区分来源</text>
+
+      <rect x="15" y="260" width="370" height="40" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="25" y="278" font-size="12" font-weight="bold" fill="#1B5E20">ⓑ LLM 调用:</text>
+      <text x="25" y="295" font-size="11" font-family="monospace" fill="#333">client.messages.create(...)</text>
+
+      <polygon points="200,310 215,330 185,330" fill="white" stroke="#388E3C" stroke-width="1"/>
+      <text x="200" y="325" font-size="11" font-weight="bold" fill="#1B5E20" text-anchor="middle">stop_reason == tool_use?</text>
+
+      <rect x="15" y="340" width="370" height="35" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="200" y="363" font-size="11" font-style="italic" fill="#C2185B" text-anchor="middle">否 → return (本轮 turn 结束)</text>
+
+      <rect x="15" y="385" width="370" height="100" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="25" y="405" font-size="12" font-weight="bold" fill="#1B5E20">ⓒ 执行工具 / 派发后台任务:</text>
+      <text x="25" y="423" font-size="11" font-family="monospace" fill="#333">for block in response.content:</text>
+      <text x="25" y="439" font-size="11" font-family="monospace" fill="#333">  if should_run_background(...):</text>
+      <text x="25" y="455" font-size="11" font-family="monospace" fill="#333">    bg_id = start_background_task()</text>
+      <text x="25" y="471" font-size="11" font-family="monospace" fill="#333">  else:</text>
+      <text x="25" y="481" font-size="11" font-family="monospace" fill="#333">    output = execute_tool(block)</text>
+
+      <rect x="15" y="495" width="370" height="55" fill="white" stroke="#388E3C" stroke-width="1" rx="4"/>
+      <text x="25" y="513" font-size="12" font-weight="bold" fill="#1B5E20">ⓓ 合并 tool_results + 后台通知:</text>
+      <text x="25" y="531" font-size="11" font-family="monospace" fill="#333">msgs.append({role:user, content:[...]})</text>
+      <text x="25" y="545" font-size="11" font-family="monospace" fill="#333">→ 回到 while 顶端</text>
+
+      <rect x="15" y="560" width="370" height="65" fill="#FFEBEE" stroke="#C2185B" stroke-width="1" rx="4"/>
+      <text x="200" y="580" font-size="12" font-weight="bold" fill="#C2185B" text-anchor="middle">被谁调用?</text>
+      <text x="200" y="598" font-size="11" fill="#333" text-anchor="middle">① 用户 REPL:  input → run_agent_turn</text>
+      <text x="200" y="613" font-size="11" fill="#333" text-anchor="middle">② L3 队列处理器:  wake-up → run_agent_turn</text>
+    </g>
+
+    <!-- Connecting arrows between columns -->
+    <!-- L1 → L2 -->
+    <path d="M 450 640 L 470 640" stroke="#F57C00" stroke-width="3" fill="none" marker-end="url(#arrowOrange)"/>
+    <text x="460" y="635" font-size="10" fill="#F57C00" text-anchor="middle">写</text>
+
+    <!-- L2 → L3 -->
+    <path d="M 870 520 L 890 520" stroke="#7B1FA2" stroke-width="3" fill="none" marker-end="url(#arrowPurple)"/>
+    <text x="880" y="515" font-size="10" fill="#7B1FA2" text-anchor="middle">读</text>
+
+    <!-- L3 → L4 -->
+    <path d="M 1290 410 L 1310 410" stroke="#388E3C" stroke-width="3" fill="none" marker-end="url(#arrowGreen)"/>
+    <text x="1300" y="405" font-size="10" fill="#388E3C" text-anchor="middle">调</text>
+
+    <!-- L4 → L2 (consume) -->
+    <path d="M 1310 615 L 870 615" stroke="#388E3C" stroke-width="2" fill="none" stroke-dasharray="4 3" marker-end="url(#arrowGreen)"/>
+    <text x="1090" y="608" font-size="10" fill="#388E3C" text-anchor="middle">consume_cron_queue (drain)</text>
+  </g>
+
+  <!-- ============== Section C: 用户输入路径 ============== -->
+  <g transform="translate(0, 2000)">
+    <text x="50" y="0" font-size="24" font-weight="bold" fill="#1E3A5F">三、用户输入路径 (User REPL Path)</text>
+    <line x1="50" y1="12" x2="1750" y2="12" stroke="#1E3A5F" stroke-width="2"/>
+
+    <g transform="translate(50, 40)">
+      <rect x="0" y="0" width="1700" height="180" fill="#FCE4EC" stroke="#C2185B" stroke-width="2" rx="8"/>
+
+      <rect x="20" y="20" width="280" height="60" fill="white" stroke="#C2185B" stroke-width="1" rx="4"/>
+      <text x="160" y="45" font-size="13" font-weight="bold" fill="#880E4F" text-anchor="middle">用户在 terminal 输入</text>
+      <text x="160" y="65" font-size="11" font-family="monospace" fill="#333" text-anchor="middle">query = input("s14 >> ")</text>
+
+      <path d="M 300 50 L 330 50" stroke="#C2185B" stroke-width="2" fill="none" marker-end="url(#arrowRed)"/>
+
+      <rect x="330" y="20" width="280" height="60" fill="#FFEBEE" stroke="#C2185B" stroke-width="1" rx="4"/>
+      <text x="470" y="45" font-size="13" font-weight="bold" fill="#C2185B" text-anchor="middle">⚡ 拿 agent_lock</text>
+      <text x="470" y="65" font-size="11" font-family="monospace" fill="#333" text-anchor="middle">with agent_lock:</text>
+
+      <path d="M 610 50 L 640 50" stroke="#C2185B" stroke-width="2" fill="none" marker-end="url(#arrowRed)"/>
+
+      <rect x="640" y="20" width="280" height="60" fill="white" stroke="#C2185B" stroke-width="1" rx="4"/>
+      <text x="780" y="45" font-size="13" font-weight="bold" fill="#880E4F" text-anchor="middle">run_agent_turn_locked(query)</text>
+      <text x="780" y="65" font-size="11" font-family="monospace" fill="#333" text-anchor="middle">agent_loop(session_history, ctx)</text>
+
+      <path d="M 920 50 L 950 50" stroke="#C2185B" stroke-width="2" fill="none" marker-end="url(#arrowRed)"/>
+
+      <rect x="950" y="20" width="280" height="60" fill="white" stroke="#C2185B" stroke-width="1" rx="4"/>
+      <text x="1090" y="45" font-size="13" font-weight="bold" fill="#880E4F" text-anchor="middle">LLM 返回 / 工具调用</text>
+      <text x="1090" y="65" font-size="11" fill="#333" text-anchor="middle">走完 agent_loop 一轮 → 释放锁</text>
+
+      <path d="M 1230 50 L 1260 50" stroke="#C2185B" stroke-width="2" fill="none" marker-end="url(#arrowRed)"/>
+
+      <rect x="1260" y="20" width="280" height="60" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="1" rx="4"/>
+      <text x="1400" y="45" font-size="13" font-weight="bold" fill="#4A148C" text-anchor="middle">此时 L3 抢不到锁</text>
+      <text x="1400" y="65" font-size="11" fill="#4A148C" text-anchor="middle">→ continue → 0.2s 后重试</text>
+
+      <text x="20" y="110" font-size="12" fill="#333">📌 用户路径与 L3 路径互斥 — 同一时刻只有一个在跑 agent_loop：</text>
+      <text x="20" y="130" font-size="12" fill="#333">  • 用户在跑 → L3 抢不到 agent_lock → 自动让出</text>
+      <text x="20" y="150" font-size="12" fill="#333">  • L3 在跑 → 用户 input 会阻塞 (GIL + lock queue) → 等 L3 释放</text>
+      <text x="20" y="170" font-size="12" font-style="italic" fill="#C2185B">⚠ agent_lock 是「不可重入」mutex — 已持锁线程再 acquire 会死锁自己</text>
+    </g>
+  </g>
+
+  <!-- ============== Section D: 共享状态 &amp; 锁 ============== -->
+  <g transform="translate(0, 2270)">
+    <text x="50" y="0" font-size="24" font-weight="bold" fill="#1E3A5F">四、共享状态 &amp; 两把锁 (Shared State &amp; Locks)</text>
+    <line x1="50" y1="12" x2="1750" y2="12" stroke="#1E3A5F" stroke-width="2"/>
+
+    <!-- Left: cron_lock-protected state -->
+    <g transform="translate(50, 40)">
+      <rect x="0" y="0" width="820" height="380" fill="#FFF9C4" stroke="#F9A825" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#F57F17">cron_lock 保护 (line 394)</text>
+
+      <rect x="20" y="50" width="380" height="80" fill="white" stroke="#F9A825" stroke-width="1" rx="4"/>
+      <text x="35" y="70" font-size="13" font-weight="bold" fill="#333">scheduled_jobs: dict</text>
+      <text x="35" y="90" font-size="11" font-family="monospace" fill="#666">job_id → CronJob</text>
+      <text x="35" y="108" font-size="11" fill="#333">所有跨线程访问都要拿锁</text>
+
+      <rect x="420" y="50" width="380" height="80" fill="white" stroke="#F9A825" stroke-width="1" rx="4"/>
+      <text x="435" y="70" font-size="13" font-weight="bold" fill="#333">cron_queue: list</text>
+      <text x="435" y="90" font-size="11" font-family="monospace" fill="#666">待触发的 CronJob 队列</text>
+      <text x="435" y="108" font-size="11" fill="#333">L1 写 / L2+L3 读</text>
+
+      <rect x="20" y="150" width="380" height="80" fill="white" stroke="#F9A825" stroke-width="1" rx="4"/>
+      <text x="35" y="170" font-size="13" font-weight="bold" fill="#333">_last_fired: dict</text>
+      <text x="35" y="190" font-size="11" font-family="monospace" fill="#666">job_id → "YYYY-MM-DD HH:MM"</text>
+      <text x="35" y="208" font-size="11" fill="#333">防同一分钟内重复入队</text>
+
+      <rect x="420" y="150" width="380" height="80" fill="white" stroke="#F9A825" stroke-width="1" rx="4"/>
+      <text x="435" y="170" font-size="13" font-weight="bold" fill="#333">.scheduled_tasks.json</text>
+      <text x="435" y="190" font-size="11" font-family="monospace" fill="#666">DURABLE_PATH = WORKDIR/.scheduled_tasks.json</text>
+      <text x="435" y="208" font-size="11" fill="#333">durable=True 任务持久化到这里</text>
+
+      <text x="20" y="260" font-size="13" font-weight="bold" fill="#F57F17">为什么用 cron_lock?</text>
+      <text x="20" y="282" font-size="12" fill="#333">• 调度线程每秒遍历 scheduled_jobs（可能要 pop 一次性任务）</text>
+      <text x="20" y="302" font-size="12" fill="#333">• 模型可能在任何时刻调 schedule_cron / cancel_cron 修改 dict</text>
+      <text x="20" y="322" font-size="12" fill="#333">• L1 写 + L3 读 cron_queue 也要互斥</text>
+      <text x="20" y="342" font-size="12" fill="#333">• dict/list 读写不是原子的 — Python GIL 不保证复合操作安全</text>
+      <text x="20" y="362" font-size="12" font-style="italic" fill="#F57F17">→ 用同一把锁保护「一组相关的共享状态」是常见模式</text>
+    </g>
+
+    <!-- Right: agent_lock -->
+    <g transform="translate(900, 40)">
+      <rect x="0" y="0" width="800" height="380" fill="#FCE4EC" stroke="#C2185B" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="16" font-weight="bold" fill="#880E4F">agent_lock 保护 (line 398)</text>
+
+      <rect x="20" y="50" width="760" height="80" fill="white" stroke="#C2185B" stroke-width="1" rx="4"/>
+      <text x="35" y="70" font-size="13" font-weight="bold" fill="#333">保护对象: agent_loop 调用全过程</text>
+      <text x="35" y="90" font-size="11" font-family="monospace" fill="#666">不是共享数据，而是「整段临界区」</text>
+      <text x="35" y="108" font-size="11" fill="#333">持锁时长 = 一整轮 LLM 调用 + 工具执行（可能几十秒）</text>
+
+      <text x="20" y="160" font-size="13" font-weight="bold" fill="#C2185B">为什么需要 agent_lock?</text>
+      <text x="20" y="180" font-size="12" fill="#333">• agent_loop 会修改 session_history — 并发跑会破坏消息序列</text>
+      <text x="20" y="200" font-size="12" fill="#333">• 同时跑两次 LLM 调用的对话会互相串台</text>
+      <text x="20" y="220" font-size="12" fill="#333">• 用户输入和 L3 队列处理器都触发 agent_loop，必须串行化</text>
+
+      <text x="20" y="260" font-size="13" font-weight="bold" fill="#C2185B">为什么用 blocking=False?</text>
+      <text x="20" y="280" font-size="12" fill="#333">• 用户正在用 agent → L3 抢不到锁 → 立刻 continue 放弃本轮</text>
+      <text x="20" y="300" font-size="12" fill="#333">• 0.2s 后 L3 重新尝试 — 见缝插针、不会饿死</text>
+      <text x="20" y="320" font-size="12" fill="#333">• 避免 L3 用 blocking=True 永久阻塞（因为用户锁持有时间长）</text>
+      <text x="20" y="345" font-size="12" font-style="italic" fill="#C2185B">⚠ 不可重入 — run_agent_turn_locked 内部不能再 acquire agent_lock</text>
+    </g>
+  </g>
+
+  <!-- ============== Section E: 工具调用链 ============== -->
+  <g transform="translate(0, 2740)">
+    <text x="50" y="0" font-size="24" font-weight="bold" fill="#1E3A5F">五、工具调用链 (Tool Registration &amp; Cancellation)</text>
+    <line x1="50" y1="12" x2="1750" y2="12" stroke="#1E3A5F" stroke-width="2"/>
+
+    <!-- schedule_cron chain -->
+    <g transform="translate(50, 40)">
+      <rect x="0" y="0" width="540" height="370" fill="#ECEFF1" stroke="#455A64" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="15" font-weight="bold" fill="#263238">📥 schedule_cron 工具调用链 (line 634-640, 540-559)</text>
+
+      <rect x="20" y="50" width="220" height="50" fill="white" stroke="#455A64" stroke-width="1" rx="4"/>
+      <text x="130" y="73" font-size="12" font-weight="bold" fill="#333" text-anchor="middle">LLM tool_call</text>
+      <text x="130" y="90" font-size="10" font-family="monospace" fill="#666" text-anchor="middle">name="schedule_cron"</text>
+
+      <path d="M 240 75 L 280 75" stroke="#455A64" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+      <rect x="280" y="50" width="240" height="50" fill="white" stroke="#455A64" stroke-width="1" rx="4"/>
+      <text x="400" y="73" font-size="12" font-weight="bold" fill="#333" text-anchor="middle">run_schedule_cron</text>
+      <text x="400" y="90" font-size="10" font-family="monospace" fill="#666" text-anchor="middle">(工具层薄包装)</text>
+
+      <path d="M 460 120 L 280 140" stroke="#455A64" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+      <rect x="20" y="120" width="260" height="50" fill="white" stroke="#455A64" stroke-width="1" rx="4"/>
+      <text x="150" y="143" font-size="12" font-weight="bold" fill="#333" text-anchor="middle">schedule_job</text>
+      <text x="150" y="160" font-size="10" font-family="monospace" fill="#666" text-anchor="middle">(注册逻辑)</text>
+
+      <path d="M 150 170 L 150 200" stroke="#455A64" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+      <rect x="20" y="200" width="500" height="50" fill="#FFF9C4" stroke="#F9A825" stroke-width="1" rx="4"/>
+      <text x="270" y="223" font-size="12" font-weight="bold" fill="#F57F17" text-anchor="middle">validate_cron</text>
+      <text x="270" y="240" font-size="11" font-family="monospace" fill="#666" text-anchor="middle">校验失败 → return error (不修改任何状态)</text>
+
+      <path d="M 270 250 L 270 280" stroke="#F9A825" stroke-width="2" fill="none" marker-end="url(#arrowOrange)"/>
+
+      <rect x="20" y="280" width="240" height="80" fill="#FFF3E0" stroke="#F57C00" stroke-width="1" rx="4"/>
+      <text x="140" y="303" font-size="12" font-weight="bold" fill="#E65100" text-anchor="middle">with cron_lock:</text>
+      <text x="140" y="320" font-size="11" font-family="monospace" fill="#333" text-anchor="middle">scheduled_jobs[id] = job</text>
+      <text x="140" y="338" font-size="11" font-style="italic" fill="#666" text-anchor="middle">⚡ 写共享字典持锁</text>
+
+      <rect x="280" y="280" width="240" height="80" fill="#FFF9C4" stroke="#F9A825" stroke-width="1" rx="4"/>
+      <text x="400" y="303" font-size="12" font-weight="bold" fill="#F57F17" text-anchor="middle">if durable:</text>
+      <text x="400" y="320" font-size="11" font-family="monospace" fill="#333" text-anchor="middle">save_durable_jobs()</text>
+      <text x="400" y="338" font-size="11" font-style="italic" fill="#666" text-anchor="middle">→ 落盘到 .json</text>
+    </g>
+
+    <!-- cancel_cron + list_crons -->
+    <g transform="translate(620, 40)">
+      <rect x="0" y="0" width="540" height="370" fill="#ECEFF1" stroke="#455A64" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="15" font-weight="bold" fill="#263238">📤 cancel_cron 调用链 (line 658-659, 562-571)</text>
+
+      <rect x="20" y="50" width="220" height="50" fill="white" stroke="#455A64" stroke-width="1" rx="4"/>
+      <text x="130" y="73" font-size="12" font-weight="bold" fill="#333" text-anchor="middle">LLM tool_call</text>
+      <text x="130" y="90" font-size="10" font-family="monospace" fill="#666" text-anchor="middle">name="cancel_cron"</text>
+
+      <path d="M 240 75 L 280 75" stroke="#455A64" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+      <rect x="280" y="50" width="240" height="50" fill="white" stroke="#455A64" stroke-width="1" rx="4"/>
+      <text x="400" y="73" font-size="12" font-weight="bold" fill="#333" text-anchor="middle">run_cancel_cron</text>
+      <text x="400" y="90" font-size="10" font-family="monospace" fill="#666" text-anchor="middle">→ cancel_job(job_id)</text>
+
+      <path d="M 400 100 L 400 130" stroke="#455A64" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+      <rect x="20" y="130" width="500" height="80" fill="#FFF3E0" stroke="#F57C00" stroke-width="1" rx="4"/>
+      <text x="270" y="153" font-size="12" font-weight="bold" fill="#E65100" text-anchor="middle">with cron_lock: scheduled_jobs.pop(id)</text>
+      <text x="270" y="175" font-size="11" font-family="monospace" fill="#333" text-anchor="middle">if not found → return "not found"</text>
+      <text x="270" y="195" font-size="11" font-family="monospace" fill="#333" text-anchor="middle">if job.durable: save_durable_jobs()</text>
+
+      <text x="20" y="240" font-size="14" font-weight="bold" fill="#263238">📋 list_crons 工具 (line 643-655)</text>
+      <text x="20" y="265" font-size="12" fill="#333">• 只读快照 — 仍要持 cron_lock（防与 L1 遍历冲突）</text>
+      <text x="20" y="285" font-size="12" font-family="monospace" fill="#666">with cron_lock: jobs = list(scheduled_jobs.values())</text>
+      <text x="20" y="310" font-size="12" fill="#333">• 输出格式: <tspan font-family="monospace" fill="#1976D2">{id}: '{cron}' → {prompt} [recurring/one-shot, durable/session]</tspan></text>
+
+      <text x="20" y="340" font-size="11" font-style="italic" fill="#666">💡 所有工具最终都通过 cron_lock 接触 scheduled_jobs — 锁是关键</text>
+    </g>
+
+    <!-- Cron matching detail -->
+    <g transform="translate(1190, 40)">
+      <rect x="0" y="0" width="510" height="370" fill="#ECEFF1" stroke="#455A64" stroke-width="2" rx="8"/>
+      <text x="20" y="28" font-size="15" font-weight="bold" fill="#263238">🎯 cron_matches 匹配规则 (line 424-455)</text>
+
+      <text x="20" y="55" font-size="12" font-weight="bold" fill="#333">单字段语法 (递归):</text>
+      <text x="20" y="75" font-size="11" font-family="monospace" fill="#333">  *      → 通配 (任意值)</text>
+      <text x="20" y="92" font-size="11" font-family="monospace" fill="#333">  */5    → 步长 (每 5 命中一次)</text>
+      <text x="20" y="109" font-size="11" font-family="monospace" fill="#333">  1,3,5  → 枚举 (可递归)</text>
+      <text x="20" y="126" font-size="11" font-family="monospace" fill="#333">  9-17   → 闭区间</text>
+      <text x="20" y="143" font-size="11" font-family="monospace" fill="#333">  30     → 精确值</text>
+
+      <text x="20" y="175" font-size="12" font-weight="bold" fill="#333">5 字段顺序: 分 时 日 月 周</text>
+      <text x="20" y="195" font-size="11" font-family="monospace" fill="#666">例: "0 9 * * *" = 每天 9:00</text>
+
+      <text x="20" y="225" font-size="12" font-weight="bold" fill="#C2185B">⚠ DOM/DOW 特殊语义 (OR):</text>
+      <text x="20" y="245" font-size="11" fill="#333">• 分、时、月 → AND (必须全命中)</text>
+      <text x="20" y="262" font-size="11" fill="#333">• 日、周 → 单独约束时按各自匹配</text>
+      <text x="20" y="279" font-size="11" fill="#C2185B">• 两者都约束时取 OR ("0 9 1 * 1" = 每月1号 OR 每周一)</text>
+
+      <text x="20" y="310" font-size="12" font-weight="bold" fill="#333">dow 索引转换:</text>
+      <text x="20" y="328" font-size="11" font-family="monospace" fill="#666">dow_val = (dt.weekday() + 1) % 7</text>
+      <text x="20" y="345" font-size="11" font-family="monospace" fill="#666"># Python Monday=0 → cron Sunday=0</text>
+    </g>
+  </g>
+
+  <!-- ============== Footer ============== -->
+  <g transform="translate(0, 3140)">
+    <rect x="0" y="0" width="1800" height="60" fill="#37474F"/>
+    <text x="50" y="25" font-size="13" fill="white" font-weight="bold">总线程数 = 4</text>
+    <text x="50" y="48" font-size="12" fill="#B0C4DE">① cron_scheduler_loop (daemon) · ② queue_processor_loop (daemon) · ③ agent_loop worker · ④ main REPL</text>
+    <text x="1750" y="25" font-size="13" fill="white" font-weight="bold" text-anchor="end">s14_code.py · 894 lines</text>
+    <text x="1750" y="48" font-size="12" fill="#B0C4DE" text-anchor="end">作者: Claude Code 教程 · v2 第 14 课</text>
+  </g>
+</svg>

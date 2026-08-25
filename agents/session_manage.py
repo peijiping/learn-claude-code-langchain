@@ -22,20 +22,22 @@ from context_compact import ContextCompact
 
 
 class SessionManager:
-    """会话管理器，负责对话历史的持久化存储和管理"""
+    """会话管理器，负责对话历史的持久化和管理"""
 
-    WORKSPACE_INSTRUCTION_FILES = ("CLAUDE.md", "AGENT.md")
-
-    def __init__(self, chat_history_dir: Path, system_prompt: str):
+    def __init__(self, chat_history_dir: Path, system_prompt: str,
+                 session_prefix: str = "session_"):
         """
         初始化会话管理器
 
         Args:
             chat_history_dir: 会话历史存储目录
             system_prompt: 系统提示词
+            session_prefix: 会话文件名前缀，默认 "session_"；
+                            cron 调度器传入 "cron_" 以独立编号
         """
         self.chat_history_dir = chat_history_dir
         self.system_prompt = system_prompt
+        self.session_prefix = session_prefix
         self.compact_manager = ContextCompact(
             transcript_dir=chat_history_dir.parent / ".transcripts",
             tool_results_dir=chat_history_dir.parent / ".task_outputs" / "tool-results",
@@ -52,14 +54,14 @@ class SessionManager:
         Returns:
             (会话编号, 会话文件路径) 如果没有会话文件则返回 (0, None)
         """
-        session_files = list(self.chat_history_dir.glob("session_*.jsonl"))
+        session_files = list(self.chat_history_dir.glob(f"{self.session_prefix}*.jsonl"))
         if not session_files:
             return 0, None
 
         max_num = 0
         for f in session_files:
             try:
-                num = int(f.stem.replace("session_", ""))
+                num = int(f.stem.replace(self.session_prefix, ""))
                 if num > max_num:
                     max_num = num
             except ValueError:
@@ -68,7 +70,7 @@ class SessionManager:
         if max_num == 0:
             return 0, None
 
-        return max_num, self.chat_history_dir / f"session_{max_num}.jsonl"
+        return max_num, self.chat_history_dir / f"{self.session_prefix}{max_num}.jsonl"
 
     def get_session_file(self, session_num: int) -> Path:
         """
@@ -80,7 +82,7 @@ class SessionManager:
         Returns:
             会话文件路径
         """
-        return self.chat_history_dir / f"session_{session_num}.jsonl"
+        return self.chat_history_dir / f"{self.session_prefix}{session_num}.jsonl"
 
     def load_session_history(self, session_file: Path) -> list:
         """
@@ -167,13 +169,18 @@ class SessionManager:
         # 清理孤儿 AIMessage：上次进程在保存 AIMessage 后、ToolMessage 落盘前
         # 崩溃 / 被中断，导致 tool_calls 没有匹配的 tool 响应。重新加载整段历史
         # 直接回传 OpenAI 会触发 400 invalid_request_error。
-        messages = self._sanitize_orphan_tool_calls(messages)
+        messages, orphan_drops = self._sanitize_orphan_tool_calls(messages)
 
-        # 自愈：发现拼行/坏行时，重写文件为标准 JSONL
-        if repaired and messages:
+        # 自愈：发现拼行/坏行，或丢弃了孤儿消息时，把清理后的列表写回文件，
+        # 避免每次启动都重复剔除同一批干消息。
+        needs_rewrite = repaired or orphan_drops > 0
+        if needs_rewrite and messages:
             try:
                 self.save_session_history(session_file, messages)
-                print("\033[33m[会话修复] 检测到历史文件存在拼行，已自动重写为标准 JSONL\033[0m")
+                if repaired:
+                    print("\033[33m[会话修复] 检测到历史文件存在拼行，已自动重写为标准 JSONL\033[0m")
+                else:
+                    print(f"\033[33m[会话修复] 已丢弃 {orphan_drops} 条孤儿消息并写回历史文件\033[0m")
             except Exception as e:
                 print(f"\033[33m[会话修复] 重写历史文件失败: {e}\033[0m")
 
@@ -226,7 +233,7 @@ class SessionManager:
 
         return fixed
 
-    def _sanitize_orphan_tool_calls(self, messages: list) -> list:
+    def _sanitize_orphan_tool_calls(self, messages: list) -> tuple[list, int]:
         """
         清理孤儿 assistant 消息：带 tool_calls 但其后没有匹配 tool 消息的情况。
 
@@ -237,8 +244,12 @@ class SessionManager:
         本函数扫描消息列表，对每个带 tool_calls 的 assistant 消息，验证紧随其后
         的 tool 消息是否覆盖了全部 tool_call_id；缺失则丢弃该 assistant 消息
         以及它后面紧跟的任何错位 tool 消息。
+
+        Returns:
+            (清理后的消息列表, 丢弃的孤儿 assistant 消息条数)
         """
         sanitized = []
+        drops = 0
         i = 0
         while i < len(messages):
             msg = messages[i]
@@ -267,6 +278,7 @@ class SessionManager:
                 else:
                     missing = expected_ids - found_ids
                     dropped_tools = j - i - 1
+                    drops += 1
                     print(
                         f"\033[33m[会话修复] 丢弃孤儿 assistant 消息 "
                         f"（缺失 tool 响应: {sorted(missing)}，"
@@ -276,7 +288,7 @@ class SessionManager:
             else:
                 sanitized.append(msg)
                 i += 1
-        return sanitized
+        return sanitized, drops
 
     def _message_to_json_row(self, message) -> dict:
         """将 OpenAI JSON 格式消息转换为 jsonl 行（与 load_session_history 读取结构保持一致）。"""
@@ -422,46 +434,14 @@ class SessionManager:
         after_text = f"{after.used_tokens}/{after.max_label} tokens，剩余 {int(after.remaining_percent)}%" if after else "未知"
         print(f"\033[33m[上下文压缩完成] {summary}；压缩后 {after_text}\033[0m")
 
-    def _build_workspace_instruction_message(self) -> dict:
-        """
-        读取 workspace 根目录下的指令文件，并构造为一条 HumanMessage。
-
-        文件读取顺序固定为 CLAUDE.md -> AGENT.md。只检查 workspace 根目录，
-        不递归子目录。
-        """
-        workspace_dir = self.chat_history_dir.parent
-        sections = []
-
-        for filename in self.WORKSPACE_INSTRUCTION_FILES:
-            instruction_file = workspace_dir / filename
-            if not instruction_file.is_file():
-                continue
-
-            try:
-                content = instruction_file.read_text(encoding="utf-8")
-            except Exception as e:
-                print(f"读取 workspace 指令文件失败: {instruction_file}: {e}")
-                continue
-
-            sections.append(f"以下是 workspace/{filename} 内容：\n\n{content}")
-
-        if not sections:
-            return None
-
-        return {"role": "user", "content": "\n\n".join(sections)}
-
     def _build_initial_messages(self) -> list:
         """
         构造新会话的初始消息。
 
-        始终第一条为 SystemMessage；如果 workspace 根目录存在 CLAUDE.md
-        或 AGENT.md，则追加一条 HumanMessage 承载这些文件内容。
+        第一条为 SystemMessage；workspace 指令文件（CLAUDE.md / AGENT.md）
+        已在 system_prompt 构造阶段拼入，不再单独注入 user 消息。
         """
-        messages = [{"role": "system", "content": self.system_prompt}]
-        workspace_instruction_msg = self._build_workspace_instruction_message()
-        if workspace_instruction_msg is not None:
-            messages.append(workspace_instruction_msg)
-        return messages
+        return [{"role": "system", "content": self.system_prompt}]
 
     def create_initialized_session(self) -> tuple[int, Path, list]:
         """
@@ -536,11 +516,11 @@ class SessionManager:
             [(会话编号, 会话文件路径, 消息数量), ...]
         """
         sessions = []
-        session_files = list(self.chat_history_dir.glob("session_*.jsonl"))
+        session_files = list(self.chat_history_dir.glob(f"{self.session_prefix}*.jsonl"))
 
         for f in session_files:
             try:
-                num = int(f.stem.replace("session_", ""))
+                num = int(f.stem.replace(self.session_prefix, ""))
                 with open(f, "r", encoding="utf-8") as file:
                     msg_count = sum(1 for line in file if line.strip())
                 sessions.append((num, f, msg_count))

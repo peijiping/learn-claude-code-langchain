@@ -16,9 +16,18 @@
 
 ## 主入口
 
-`agents/agent_full_v2.py` — 基于 `ChatOpenAI.bind_tools()` 的 REPL 循环。
+- `agents/agent_cli.py` — **唯一入口**（`python agents/agent_cli.py`），实例化 `Agent` 驱动 REPL（input 循环 + 斜杠命令 + readline 配置）。
+- `agents/agent_full_v2.py` — 主智能体引擎，`Agent` 类（基于 `ChatOpenAI.bind_tools()`），持有全部依赖与会话状态，支持多实例隔离。**不作为启动入口**（已移除 `__main__`），由 agent_cli.py 导入。
 
-同级模块：`tools.py` / `subagent.py` / `skills.py` / `todo_manager.py` / `task_manager.py` / `background_manager.py` / `compact.py` / `session_manage.py` / `message_bus.py` / `teammate_manager.py` / `llm_manage.py`
+为 s14 定时任务（每任务独立会话）与未来 TUI 多会话预留接缝：
+
+```python
+agent = Agent()
+agent.init_session(resume=False)   # 新会话（cron 用）
+agent.run_turn("[Scheduled] ...")  # 非交互单轮
+```
+
+同级模块：`tools.py` / `agent_cli.py` / `subagent.py` / `skills.py` / `todo_manager.py` / `task_manager.py` / `background_manager.py` / `compact.py` / `session_manage.py` / `message_bus.py` / `teammate_manager.py` / `llm_manage.py`
 
 ## 核心模式
 
@@ -61,5 +70,6 @@ agent_loop(messages):
 - 别删 `agents/anthropic/` 和 `agents/anthropic_v2/` 下的教程代码——它们是学习对照材料，只读不动。
 - 当我问"看教程"时，去 `agents/anthropic/`（v1）或 `agents/anthropic_v2/`（v2）找对应的课程代码。
 - 我自己的实现若有 bug，优先修 `agents/agent_full_v2.py` 及其同级模块。
-- **路径定义统一管理**：所有工作目录相关常量（`WORKDIR`、`TODO_DIR`、`TEAM_DIR`、`INBOX_DIR`、`CHAT_HISTORY_DIR`、`TRANSCRIPT_DIRNAME`、`TOOL_RESULTS_DIRNAME` 等）一律在 `agents/tool_base.py` 顶部集中定义，其他模块通过 `from tool_base import ...` 引用，禁止在业务模块内重复声明。
+- **路径定义统一管理**：所有工作目录相关常量（`WORKDIR`、`TODO_DIR`、`TEAM_DIR`、`INBOX_DIR`、`CHAT_HISTORY_DIR`、`TRANSCRIPT_DIRNAME`、`TOOL_RESULTS_DIRNAME` 等）一律在 `agents/paths.py` 顶部集中定义，其他模块通过 `from paths import ...` 引用，禁止在业务模块内重复声明。
+- **工具统一走 ToolRegistry（实例，无全局单例）**：`agents/tools.py` 的 `ToolRegistry` 类统一管理所有工具（原 `tool_base.py` 已合并删除），由 `Agent`（`agent_full_v2.py`）实例化并持有为 `self.tools`。**不再提供全局单例 `TOOL_REGISTRY`**，多实例各持一份。工具定义用 `self.tools.main_agent_tools`（子智能体用 `self.tools.base_tools`）、处理器用 `self.tools.handlers`、执行用 `self.tools.execute(name, **args)`；基础工具方法（`run_bash` / `run_read` / `run_write` / `run_edit` / `run_glob` / `safe_path`）与 todo/background holder（`set_todo_manager` / `get_todo_manager` / `set_background_manager`）均通过该实例调用。其他模块（如 `teammate_manager` / `system_prompt`）需要工具时，由调用方注入 `ToolRegistry` 实例（构造参数），禁止再 import 被删除的 `tool_base` 或全局单例。
 - **可调参数走 `.env`**：纯路径之外的运行时可调参数（如 `context_compact.py` 中的 `CONTEXT_LIMIT_CHARS`、`SNIP_MAX_MESSAGES`、`SUMMARY_TRIGGER_RATIO`、`MAX_REACTIVE_RETRIES` 等）一律声明在 `.env`（默认值同时给到 `.env.example` 的注释示例），代码中通过 `os.environ.get(KEY) or default`（整数用 `int(...)`、浮点用 `float(...)`，与 `llm_manage.py` 风格保持一致）内联读取；新增/修改这类参数时，必须同步更新 `.env` 与 `.env.example`。

@@ -2,456 +2,567 @@
 """
 teammate_manager.py - 团队成员管理模块
 
-本模块实现基于文件的 JSONL 收件箱的团队成员管理系统。提供两个核心类：
+本模块实现基于文件的 JSONL 收件箱的团队成员管理系统，整合自 s17 课程
+（autonomous agents：WORK → IDLE → SHUTDOWN 生命周期）。核心类 TeammateManager：
 
-1. MessageBus（消息总线）：负责团队成员之间的消息传递
-   - 每位团队成员拥有独立的 JSONL 收件箱文件
-   - 支持点对点消息、广播消息、以及特殊消息类型
+- 每个队友是一个独立线程：WORK 阶段（LLM 循环）→ IDLE 阶段（空闲轮询）→ SHUTDOWN
+- 空闲时轮询邮箱（优先处理协议消息）与任务板（自动认领未分配任务）
+- 支持 shutdown / plan_approval 协议，通过 request_id 关联请求与响应
+- 持久化团队配置到 config.json（team_name / members / status）
 
-2. TeammateManager（团队成员管理器）：负责管理团队成员的生命周期
-   - 持久化团队配置到 config.json
-   - 通过独立线程运行每位团队成员的代理循环
-   - 支持动态创建、状态跟踪和优雅关闭
-
-关键概念：
-- 团队成员（Teammate）：持久化的命名代理，拥有独立线程和收件箱
-- 收件箱（Inbox）：基于 JSONL 文件的消息队列，仅追加写入，读取后清空
-- 消息类型：支持 5 种预定义消息类型，用于不同通信场景
+消息总线 MessageBus 来自 message_bus.py（每成员一个 JSONL 收件箱）。
+LLM 调用使用 OpenAI SDK（llm_manage.LLMClient），工具执行通过注入的 ToolRegistry。
 """
 import os
 import json
-from message_bus import MessageBus,VALID_MSG_TYPES
-
+import time
+import random
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
-from llm_manage import LLMClient
-from tool_base import (
-    safe_path,
-    run_read,run_read_pdf, run_write, run_edit,run_glob,
-    WORKDIR,TEAM_DIR,INBOX_DIR,
-)
 
-# -- TeammateManager: persistent named agents with config.json --
+from message_bus import MessageBus
+from llm_manage import LLMClient
+from paths import INBOX_DIR
+from tools import ToolRegistry
+
+# ── 可调参数（遵循 .env 约定，见 AGENTS.md）──
+IDLE_POLL_INTERVAL = int(os.environ.get("IDLE_POLL_INTERVAL", "5"))   # 空闲等待的兜底周期（秒），配合 Event 即时唤醒
+IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "60"))              # 空闲超时时间（秒），超过则队友关闭
+TEAM_MAX_TOOL_ROUNDS = int(os.environ.get("TEAM_MAX_TOOL_ROUNDS", "5"))  # 每轮 WORK 最多 tool_use 轮数
+TEAM_MAX_TOKENS = int(os.environ.get("TEAM_MAX_TOKENS", "4096"))      # 队友每轮 LLM 生成的 max_tokens（聚焦小任务，宜小以提速）
+
+
+# ── Protocol State（智能体间协议状态，来自 s16）──
+# 协议机制：Lead 可以向队友发送 shutdown/plan_approval 请求，
+# 队友通过 request_id 响应，match_response 将响应关联回原始请求
+
+@dataclass
+class ProtocolState:
+    """协议状态：记录一次请求的完整生命周期。"""
+    request_id: str      # 请求唯一标识
+    type: str            # 协议类型：shutdown / plan_approval
+    sender: str          # 发送方
+    target: str          # 目标方
+    status: str          # 当前状态：pending / approved / rejected
+    payload: str         # 请求负载（如计划内容）
+    created_at: float = field(default_factory=time.time)
+
+
 class TeammateManager:
     """
-    团队成员管理器，负责管理团队成员的生命周期和团队配置
+    团队成员管理器，负责管理团队成员的生命周期、协议通信与团队配置。
 
     核心职责：
-    - 持久化存储团队配置（config.json），包含团队名称和所有成员信息
-    - 管理团队成员的线程，实现真正的并发执行
-    - 追踪成员状态：working（工作中）、idle（空闲）、shutdown（已关闭）
-    - 提供成员Spawn机制，为每位成员创建独立的代理循环线程
+    - 持久化团队配置（config.json）：team_name + members（含状态）
+    - 通过独立线程运行每位队友的自主代理循环（WORK → IDLE → SHUTDOWN）
+    - 空闲轮询邮箱与任务板，自动认领未分配任务（scan_unclaimed_tasks / idle_poll）
+    - 协议机制：shutdown / plan_approval，request_id 关联请求与响应
+    - 为 Lead 提供队友管理工具（spawn_teammate / send_message / check_inbox /
+      request_shutdown / request_plan / review_plan）
 
     成员状态机：
-    - idle -> working: 当收到新任务并开始执行时
-    - working -> idle: 当任务完成或线程达到最大轮数时
-    - working -> shutdown: 当收到关闭请求并批准时
-    - idle -> shutdown: 当收到关闭请求并批准时
+    - idle -> working: 收到新消息或自动认领任务
+    - working -> idle: 无新工作（空闲轮询超时）
+    - working/idle -> shutdown: 收到 shutdown_request 并批准
     """
 
-    def __init__(self, team_dir: Path):
+    def __init__(self, team_dir: Path, tools: ToolRegistry = None):
         """
-        初始化团队成员管理器
+        初始化团队成员管理器。
 
         参数:
-            team_dir: 团队目录路径，用于存放 config.json 和收件箱目录
+            team_dir: 团队目录路径，用于存放 config.json
+            tools: ToolRegistry 实例，用于执行工具调用（默认构造实例，非全局单例）
         """
         self.dir = team_dir
-        self.dir.mkdir(exist_ok=True)  # 确保目录存在
-        self.config_path = self.dir / "config.json"  # 团队配置文件路径
-        self.config = self._load_config()  # 加载团队配置
-        self.threads = {}  # 存储团队成员对应的线程对象 {name: Thread}
-        # 初始化消息总线
-        # 每个团队成员拥有独立的 JSONL 收件箱文件（./inbox/{name}.jsonl）
-        self.bus = MessageBus(INBOX_DIR)
-        # 初始化 LLM 客户端
-        self.llm_client = LLMClient().llm
+        self.dir.mkdir(exist_ok=True)                      # 确保目录存在
+        self.config_path = self.dir / "config.json"        # 团队配置文件路径
+        self.config = self._load_config()                  # 加载团队配置
+        self.threads = {}                                  # 存储队友线程 {name: Thread}
+        self.bus = MessageBus(INBOX_DIR)                   # 消息总线（JSONL 收件箱）
+        self.llm_client = LLMClient().llm                  # OpenAI SDK 客户端
+        self.model = os.environ.get("OPENAI_MODEL_ID", "") # 模型 ID
+        # 注入工具实例（实例级默认构造，非全局单例）
+        self.tools = tools if tools is not None else ToolRegistry()
 
-        self.model = os.environ.get("OPENAI_MODEL_ID", "")
+        # s17：协议请求与活跃队友追踪（实例级）
+        self.pending_requests: dict[str, ProtocolState] = {}
+        self.active_teammates: dict[str, bool] = {}
+        # s17 优化：每队友一个唤醒事件，Lead 发消息即 set()，消除轮询唤醒延迟
+        self.wake_events: dict[str, threading.Event] = {}
 
+    # ═══════════════════════════════════════════════════════════
+    #  团队配置持久化（config.json）
+    # ═══════════════════════════════════════════════════════════
 
     def _load_config(self) -> dict:
-        """
-        从文件加载团队配置
-
-        返回:
-            dict: 团队配置对象，格式为：
-            {
-                "team_name": str,    # 团队名称
-                "members": list      # 成员列表
-            }
-            如果配置文件不存在，返回默认配置
-        """
+        """从文件加载团队配置；不存在时返回默认配置。"""
         if self.config_path.exists():
             return json.loads(self.config_path.read_text())
         return {"team_name": "default", "members": []}
 
-    def _save_config(self):
-        """
-        将当前团队配置保存到文件
+    def _save_config(self) -> None:
+        """将当前团队配置保存到文件（格式化 JSON）。"""
+        self.config_path.write_text(
+            json.dumps(self.config, indent=2, ensure_ascii=False))
 
-        注意:
-            - 配置以格式化 JSON 形式保存（带缩进）
-            - 每次成员状态变更或新增成员时都会保存配置
-        """
-        self.config_path.write_text(json.dumps(self.config, indent=2))
-
-    def _find_member(self, name: str) -> dict:
-        """
-        根据名称查找团队成员
-
-        参数:
-            name: 成员名称
-
-        返回:
-            dict: 成员对象，如果未找到则返回 None
-        """
+    def _find_member(self, name: str) -> dict | None:
+        """根据名称查找团队成员；未找到返回 None。"""
         for m in self.config["members"]:
             if m["name"] == name:
                 return m
         return None
 
-    def spawn(self, name: str, role: str, prompt: str) -> str:
-        """
-        创建（Spawn）一个新的团队成员
-
-        参数:
-            name: 成员名称，用于标识和通信
-            role: 成员角色，描述其职责或专业领域
-            prompt: 初始任务描述，将作为该成员的首条消息
-
-        返回:
-            str: 操作结果字符串
-
-        逻辑说明：
-        1. 如果成员已存在且状态为 idle 或 shutdown，则重新激活
-        2. 如果成员已存在且状态为 working，则返回错误（成员正忙）
-        3. 如果成员不存在，则创建新成员记录
-        4. 创建并启动新线程运行该成员的代理循环
-        """
-        member = self._find_member(name)
-
-        if member:
-            # 检查成员是否真的有活跃线程在运行
-            thread = self.threads.get(name)
-            if thread and thread.is_alive():
-                # 线程真实存在且正在运行，拒绝重新创建
-                return f"Error: '{name}' is currently {member['status']} (thread active)"
-            # 线程已不存在或已结束（如程序重启后 config 残留 "working" 状态），允许重新激活
-            member["status"] = "working"
-            member["role"] = role
-        else:
-            # 新成员：创建成员记录
-            member = {"name": name, "role": role, "status": "working"}
-            self.config["members"].append(member)
-
-        self._save_config()  # 保存更新后的配置
-
-        # 创建并启动新线程运行成员代理循环
-        thread = threading.Thread(
-            target=self._teammate_loop,
-            args=(name, role, prompt),
-            daemon=True,  # 设置为守护线程，主程序退出时自动终止
-        )
-        self.threads[name] = thread
-        thread.start()
-
-        return f"Spawned '{name}' (role: {role})"
-
-    def _teammate_loop(self, name: str, role: str, prompt: str):
-        """
-        团队成员的代理循环，在独立线程中运行
-
-        参数:
-            name: 成员名称
-            role: 成员角色
-            prompt: 初始任务描述
-
-        循环逻辑：
-        1. 首先检查收件箱，读取所有待处理消息
-        2. 调用 LLM 处理对话和工具调用
-        3. 执行工具调用，更新消息历史
-        4. 重复直到对话结束或达到最大轮数（50轮）
-
-        线程安全：
-        - 每个成员拥有独立的线程和消息历史
-        - 通过 MessageBus 进行线程间通信（文件级别的 JSONL）
-        """
-        # 构建成员的系统提示词
-        sys_prompt = (
-            f"You are '{name}', role: {role}, at {WORKDIR}. "
-            f"Use send_message to communicate. Complete your task.\n\n"
-            f"## Shutdown Protocol\n"
-            f"When you receive a message with type 'shutdown_request', you MUST respond immediately:\n"
-            f"1. Call send_message with msg_type='shutdown_response' to 'lead'\n"
-            f"2. Include the request_id from the shutdown_request message in the extra field\n"
-            f"3. Set approve=true in the extra field\n"
-            f"4. Then stop all work and end your task."
-        )
-
-        # 初始化消息历史，以初始任务描述作为首条用户消息
-        messages = [{"role": "system", "content": sys_prompt}]
-        messages.append({"role": "user", "content": prompt})
-
-        # 获取该成员可用的工具列表
-        tools = self._teammate_tools()
-
-        llm_with_tools = create_llm_with_tools(tools)
-
-        # 代理循环，最多执行 50 轮
-        max_consecutive_empty_inbox = 3  # 连续空收件箱阈值，超过则退出循环
-        consecutive_empty_count = 0  # 连续空收件箱计数器
-        shutdown_received = False  # 是否收到关闭请求
-
-        for _ in range(50):
-            # 步骤1：检查收件箱，获取所有待处理消息
-            inbox = self.bus.read_inbox(name)
-            for msg in inbox:
-                # 检查是否收到关闭请求
-                if msg.get("type") == "shutdown_request":
-                    shutdown_received = True
-                # 将每条消息作为用户消息添加到历史
-                messages.append({"role": "user", "content": json.dumps(msg)})
-
-            # 如果收件箱有消息，重置连续空收件箱计数器
-            if inbox:
-                consecutive_empty_count = 0
-            else:
-                # 收件箱为空，增加计数器
-                consecutive_empty_count += 1
-                # 如果连续空收件箱次数超过阈值，且LLM之前选择了不调用工具或只有空输出，则退出
-                if consecutive_empty_count >= max_consecutive_empty_inbox:
-                    print(f"  [{name}] 收件箱连续为空，退出循环")
-                    break
-
-            try:
-                # 步骤2：调用 LLM 进行推理
-                response = self.llm_client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=tools,
-                    stream=False, #是否流式输出，默认 False
-                    max_tokens=4000,
-                    temperature=0.5,
-                    reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
-                    extra_body={"thinking":{"type":"disabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
-                )
-            except Exception:
-                # LLM 调用失败，退出循环
-                break
-
-            # 将 LLM 响应添加到消息历史
-            reponse_msg = response.choices[0].message
-            messages.append(reponse_msg.model_dump())
-
-            # 步骤3：如果 LLM 停止原因是工具调用，则执行工具
-            if not hasattr(reponse_msg, "tool_calls") or not reponse_msg.tool_calls:
-                # LLM 选择不调用工具，对话结束
-                break
-
-            # 步骤4：执行所有工具调用
-            has_meaningful_output = False  # 标记是否有意义的输出
-            for tool_call in reponse_msg.tool_calls:
-                tool_name = tool_call.function.name
-                # OpenAI SDK 返回的 function.arguments 是 JSON 字符串,需解析为 dict 才能按 key 取值
-                raw_args = tool_call.function.arguments
-                tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                tool_id = tool_call.id
-                output = self._exec(name, tool_name, tool_args)
-                print(f"  [{name}] {tool_name}: {str(output)[:120]}")
-
-                # 检查输出是否有意义（非空、非错误）
-                output_str = str(output).strip()
-                if output_str and not output_str.startswith("Error:") and output_str not in ("()", "[]", "None"):
-                    has_meaningful_output = True
-                # 将工具执行结果添加到消息历史
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "content": str(output),
-                })
-
-            # 如果连续空收件箱但有有意义的输出，重置计数器
-            if consecutive_empty_count > 0 and has_meaningful_output:
-                consecutive_empty_count = 0
-
-        # 循环结束，更新成员状态
+    def _update_member_status(self, name: str, status: str) -> None:
+        """更新指定团队成员的状态并保存配置。"""
         member = self._find_member(name)
         if member:
-            if shutdown_received:
-                member["status"] = "shutdown"
-            elif member["status"] != "shutdown":
-                member["status"] = "idle"
+            member["status"] = status
             self._save_config()
 
-    def _exec(self, sender: str, tool_name: str, args: dict) -> str:
-        """
-        执行工具调用的分发器
-
-        参数:
-            sender: 调用者的名称（用于 send_message 等需要标识发送者的工具）
-            tool_name: 工具名称
-            args: 工具参数字典
-
-        返回:
-            str: 工具执行结果的字符串表示
-
-        支持的工具：
-        - bash: 执行 Shell 命令
-        - read_file: 读取文件内容
-        - write_file: 写入文件内容
-        - edit_file: 编辑文件（替换指定文本）
-        - send_message: 发送消息给团队成员
-        - read_inbox: 读取并清空自己的收件箱
-        """
-        # bash: 执行 Shell 命令
-        if tool_name == "bash":
-            return run_bash(args["command"])
-
-        # read_file: 读取文件内容
-        if tool_name == "read_file":
-            return run_read(args["path"])
-
-        # write_file: 写入文件内容
-        if tool_name == "write_file":
-            return run_write(args["path"], args["content"])
-
-        # edit_file: 编辑文件（替换精确匹配的文本）
-        if tool_name == "edit_file":
-            return run_edit(args["path"], args["old_text"], args["new_text"])
-
-        # send_message: 发送消息给团队成员
-        if tool_name == "send_message":
-            return self.bus.send(sender, args["to"], args["content"], args.get("msg_type", "message"))
-
-        # read_inbox: 读取并清空自己的收件箱
-        if tool_name == "read_inbox":
-            return json.dumps(self.bus.read_inbox(sender), indent=2)
-
-        # 未知工具
-        return f"Unknown tool: {tool_name}"
-
-    def _teammate_tools(self) -> list:
-        """
-        获取团队成员可用的工具列表
-
-        返回:
-            list: Anthropic 格式的工具定义列表
-
-        说明:
-            团队成员拥有受限的工具集，比主智能体权限更小。
-            工具集包括基础的文件操作和团队通信工具。
-
-        工具列表：
-        - bash: 执行 Shell 命令
-        - read_file: 读取文件内容
-        - write_file: 写入文件内容
-        - edit_file: 编辑文件（替换指定文本）
-        - send_message: 发送消息给团队成员
-        - read_inbox: 读取并清空自己的收件箱
-        """
-        return [
-            {
-                "name": "bash",
-                "description": "Run a shell command.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"command": {"type": "string"}},
-                    "required": ["command"]
-                }
-            },
-            {
-                "name": "read_file",
-                "description": "Read file contents.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "write_file",
-                "description": "Write content to file.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"}
-                    },
-                    "required": ["path", "content"]
-                }
-            },
-            {
-                "name": "edit_file",
-                "description": "Replace exact text in file.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "old_text": {"type": "string"},
-                        "new_text": {"type": "string"}
-                    },
-                    "required": ["path", "old_text", "new_text"]
-                }
-            },
-            {
-                "name": "send_message",
-                "description": "Send message to a teammate.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "to": {"type": "string"},
-                        "content": {"type": "string"},
-                        "msg_type": {"type": "string", "enum": list(VALID_MSG_TYPES)}
-                    },
-                    "required": ["to", "content"]
-                }
-            },
-            {
-                "name": "read_inbox",
-                "description": "Read and drain your inbox.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
-        ]
-
     def list_all(self) -> str:
-        """
-        列出所有团队成员及其状态
-
-        返回:
-            str: 格式化的成员列表字符串
-        """
+        """列出所有团队成员及其状态。"""
         if not self.config["members"]:
             return "No teammates."
-
         lines = [f"Team: {self.config['team_name']}"]
         for m in self.config["members"]:
             lines.append(f"  {m['name']} ({m['role']}): {m['status']}")
         return "\n".join(lines)
 
     def member_names(self) -> list:
-        """
-        获取所有团队成员的名称列表
-
-        返回:
-            list: 成员名称字符串列表
-        """
+        """获取所有团队成员的名称列表。"""
         return [m["name"] for m in self.config["members"]]
 
-    def _update_member_status(self, name: str, status: str) -> None:
-        """
-        更新指定团队成员的状态并保存配置
+    # ═══════════════════════════════════════════════════════════
+    #  协议机制：请求 ID 生成与响应关联（来自 s16）
+    # ═══════════════════════════════════════════════════════════
 
-        参数:
-            name: 成员名称
-            status: 新状态 (working/idle/shutdown)
+    def _send(self, sender: str, to: str, content: str,
+              msg_type: str = "message", extra: dict = None) -> str:
+        """统一发送封装：写入总线后立即 set 目标队友的唤醒事件。
+
+        目标为 lead（无唤醒事件）时 get 返回 None 安全跳过；目标为队友时
+        立刻唤醒，把协作握手延迟从轮询周期降到趋近 0。
         """
+        result = self.bus.send(sender, to, content, msg_type, extra)
+        event = self.wake_events.get(to)
+        if event is not None:
+            event.set()
+        return result
+
+    def new_request_id(self) -> str:
+        """生成新的协议请求 ID。"""
+        return f"req_{random.randint(0, 999999):06d}"
+
+    def match_response(self, response_type: str, request_id: str, approve: bool):
+        """通过 request_id 将响应与原始请求关联起来。"""
+        state = self.pending_requests.get(request_id)
+        if not state:
+            print(f"  \033[31m[protocol] unknown request_id: {request_id}\033[0m")
+            return
+        # 校验响应类型与请求类型是否匹配
+        if state.type == "shutdown" and response_type != "shutdown_response":
+            print(f"  \033[31m[protocol] type mismatch: expected shutdown_response, "
+                  f"got {response_type}\033[0m")
+            return
+        if state.type == "plan_approval" and response_type != "plan_approval_response":
+            print(f"  \033[31m[protocol] type mismatch: expected plan_approval_response, "
+                  f"got {response_type}\033[0m")
+            return
+        state.status = "approved" if approve else "rejected"
+        icon = "✓" if approve else "✗"
+        color = "32" if approve else "31"
+        print(f"  \033[{color}m[protocol] {state.type} {icon} "
+              f"({request_id}: {state.status})\033[0m")
+
+    # ═══════════════════════════════════════════════════════════
+    #  自主队友：任务板扫描 + 空闲轮询（来自 s17）
+    # ═══════════════════════════════════════════════════════════
+
+    def scan_unclaimed_tasks(self) -> list:
+        """扫描任务板，找到所有待处理、未被认领、且依赖已完成的任务。"""
+        tm = self.tools.task_manager
+        return [t for t in tm._list_tasks()
+                if t.status == "pending" and not t.owner and tm._can_start(t.id)]
+
+    def idle_poll(self, name: str, messages: list) -> str:
+        """空闲等待（被唤醒即时处理，否则超时兜底）。返回 'work'、'shutdown' 或 'timeout'。
+
+        s17 优化：用 per-teammate 唤醒事件 event.wait() 替代固定 time.sleep 轮询。
+        Lead 发消息到该队友时 _send() 会 set() 事件立刻唤醒，消除 0~IDLE_POLL_INTERVAL 的等待延迟；无消息时 event.wait() 为阻塞休眠，不空转 CPU。IDLE_POLL_INTERVAL
+        作为唤醒等待的兜底周期，IDLE_TIMEOUT 作为整体等待上限。
+        """
+        event = self.wake_events.get(name)
+        deadline = time.time() + IDLE_TIMEOUT
+        while time.time() < deadline:
+            # 有事件则阻塞等待被唤醒（_send set 后立即返回），无事件退化为固定间隔轮询
+            if event is not None:
+                event.wait(IDLE_POLL_INTERVAL)
+                event.clear()
+            else:
+                time.sleep(IDLE_POLL_INTERVAL)
+
+            # 第一步：检查邮箱——优先处理协议消息
+            inbox = self.bus.read_inbox(name)
+            if inbox:
+                # 检查是否有关闭请求（shutdown_request）
+                for msg in inbox:
+                    if msg.get("type") == "shutdown_request":
+                        req_id = msg.get("request_id", "")
+                        self._send(name, "lead", "Shutting down gracefully.",
+                                      "shutdown_response",
+                                      {"request_id": req_id, "approve": True})
+                        print(f"  \033[35m[protocol] {name} approved shutdown "
+                              f"in idle ({req_id})\033[0m")
+                        return "shutdown"
+
+                # 非协议消息：注入对话上下文，恢复工作
+                messages.append({"role": "user",
+                    "content": "<inbox>" + json.dumps(inbox) + "</inbox>"})
+                print(f"  \033[36m[idle] {name} found inbox messages\033[0m")
+                return "work"
+
+            # 第二步：扫描任务板，自动认领未分配的任务
+            unclaimed = self.scan_unclaimed_tasks()
+            if unclaimed:
+                task = unclaimed[0]
+                result = self.tools.task_manager._claim_task(task.id, owner=name)
+                if "Claimed" in result:
+                    messages.append({"role": "user",
+                        "content": f"<auto-claimed>Task {task.id}: "
+                                   f"{task.subject}</auto-claimed>"})
+                    print(f"  \033[32m[idle] {name} auto-claimed: "
+                          f"{task.subject}\033[0m")
+                    return "work"
+                print(f"  \033[33m[idle] {name} claim failed: "
+                      f"{result}\033[0m")
+
+        print(f"  \033[31m[idle] {name} timeout ({IDLE_TIMEOUT}s)\033[0m")
+        return "timeout"
+
+    # ═══════════════════════════════════════════════════════════
+    #  队友线程：WORK → IDLE → SHUTDOWN（来自 s15 + s16 + s17）
+    #  每个队友是一个独立线程，拥有自己的消息列表和 LLM 调用循环
+    # ═══════════════════════════════════════════════════════════
+
+    def spawn_teammate(self, name: str, role: str, prompt: str) -> str:
+        """生成一个自主队友智能体（独立线程）。"""
+        if name in self.active_teammates or (self.threads.get(name)
+                                             and self.threads[name].is_alive()):
+            return f"Teammate '{name}' already exists"
+
+        # 持久化成员记录：已存在则重新激活，不存在则新建
         member = self._find_member(name)
-        if member:
-            member["status"] = status
-            self._save_config()
+        if member is None:
+            member = {"name": name, "role": role, "status": "working"}
+            self.config["members"].append(member)
+        else:
+            member["status"] = "working"
+            member["role"] = role
+        self._save_config()
 
+        self.active_teammates[name] = True
+        self.wake_events[name] = threading.Event()   # 为此队友创建唤醒事件
+        thread = threading.Thread(
+            target=self._teammate_loop, args=(name, role, prompt),
+            daemon=True,
+        )
+        self.threads[name] = thread
+        thread.start()
+        print(f"  \033[36m[teammate] {name} spawned as {role}\033[0m")
+        return f"Teammate '{name}' spawned as {role} (autonomous)"
 
+    def _handle_inbox_message(self, name: str, msg: dict, messages: list) -> bool:
+        """根据消息类型分派传入的协议消息；返回 True 表示需要关闭。"""
+        msg_type = msg.get("type", "message")
+        req_id = msg.get("request_id", "")
+
+        if msg_type == "shutdown_request":
+            # 处理关闭请求：自动批准并回复
+            self._send(name, "lead", "Shutting down gracefully.",
+                          "shutdown_response",
+                          {"request_id": req_id, "approve": True})
+            print(f"  \033[35m[protocol] {name} approved shutdown "
+                  f"({req_id})\033[0m")
+            return True  # 返回 True 表示需要关闭
+
+        if msg_type == "plan_approval_response":
+            # 处理计划审批回复：批准或拒绝后注入提示
+            approve = msg.get("approve", False)
+            if approve:
+                messages.append({"role": "user",
+                    "content": "[Plan approved] Proceed with the task."})
+            else:
+                messages.append({"role": "user",
+                    "content": f"[Plan rejected] Feedback: {msg['content']}"})
+        return False  # 不需要关闭
+
+    def _teammate_loop(self, name: str, role: str, prompt: str):
+        """队友的代理循环（独立线程）：WORK 阶段 → IDLE 阶段 → 结束。"""
+        system = (f"You are '{name}', a {role}. "
+                  f"Use tools to complete tasks. "
+                  f"You can list and claim tasks from the board. "
+                  f"Check inbox for protocol messages.")
+
+        # OpenAI 格式：首条为 system，随后为初始任务
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": prompt}]
+
+        # 外层循环：WORK → IDLE 循环
+        while True:
+            # 身份信息重新注入（s17 新增，防止上下文压缩后丢失身份）
+            if len(messages) <= 3:
+                messages.insert(0, {"role": "user",
+                    "content": f"<identity>You are '{name}', role: {role}. "
+                               f"Continue your work.</identity>"})
+
+            # ── WORK 阶段：LLM 调用循环（OpenAI SDK）──
+            should_shutdown = False
+            for _ in range(TEAM_MAX_TOOL_ROUNDS):
+                inbox = self.bus.read_inbox(name)
+                for msg in inbox:
+                    stopped = self._handle_inbox_message(name, msg, messages)
+                    if stopped:
+                        should_shutdown = True
+                        break
+                if should_shutdown:
+                    break
+                if inbox and not should_shutdown:
+                    non_protocol = [m for m in inbox
+                                    if m.get("type") == "message"]
+                    if non_protocol:
+                        messages.append({"role": "user",
+                            "content": f"<inbox>{json.dumps(non_protocol)}</inbox>"})
+
+                try:
+                    response = self.llm_client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=self._teammate_tools(),
+                        tool_choice="auto",
+                        max_tokens=TEAM_MAX_TOKENS,
+                    )
+                except Exception as e:
+                    print(f"  \033[31m[teammate] {name} LLM error: {e}\033[0m")
+                    break
+
+                response_msg = response.choices[0].message
+                tool_calls = response_msg.tool_calls or []
+                # 以 OpenAI 请求格式存 assistant 消息（仅保留 role/content/tool_calls，
+                # 去掉 model_dump() 混入的 refusal/audio/index 等响应字段）
+                assistant_msg = {"role": "assistant"}
+                if response_msg.content is not None:
+                    assistant_msg["content"] = response_msg.content
+                if tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        tc.model_dump() for tc in tool_calls]
+                messages.append(assistant_msg)
+                if response.choices[0].finish_reason != "tool_calls" or not tool_calls:
+                    break  # 非工具调用 → 停止本轮
+
+                for tc in tool_calls:
+                    tool_name = tc.function.name
+                    try:
+                        tool_args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    output = self._exec(name, tool_name, tool_args)
+                    # OpenAI 要求每个工具结果作为独立 tool 消息返回，
+                    # 不能再打包进 content（会导致 missing field `type` 400）
+                    messages.append({"role": "tool",
+                                     "tool_call_id": tc.id,
+                                     "name": tool_name,
+                                     "content": str(output)})
+
+            if should_shutdown:
+                break
+
+            # ── IDLE 阶段（s17 新增）：空闲轮询 ──
+            idle_result = self.idle_poll(name, messages)
+            if idle_result in ("shutdown", "timeout"):
+                break
+
+        # 总结工作结果，发送给 Lead
+        summary = "Done."
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    summary = content
+                    break
+        self._send(name, "lead", summary, "result")
+        self._update_member_status(name, "shutdown" if should_shutdown else "idle")
+        self.active_teammates.pop(name, None)
+        self.wake_events.pop(name, None)
+        print(f"  \033[32m[teammate] {name} finished\033[0m")
+
+    # ═══════════════════════════════════════════════════════════
+    #  队友工具：定义（OpenAI function calling 格式）+ 执行分发
+    # ═══════════════════════════════════════════════════════════
+
+    def _teammate_tools(self) -> list:
+        """队友可用的工具定义（OpenAI 格式）。
+
+        通用基础工具（bash / run_read / run_write）直接复用
+        ToolRegistry.base_tools 的既有定义（单一事实来源，避免与 tools.py 漂移）；
+        团队协议/任务工具是 teammate 角色独有，与 MessageBus / TaskManager /
+        ProtocolState 绑定，保留在本地。
+        """
+        wanted = {"bash", "run_read", "run_write", "run_read_pdf"}
+        base = [t for t in self.tools.base_tools
+                if t["function"]["name"] in wanted]
+        protocol = [
+            {"type": "function", "function": {
+                "name": "send_message",
+                "description": "Send message to another agent.",
+                "parameters": {"type": "object",
+                               "properties": {"to": {"type": "string"},
+                                              "content": {"type": "string"}},
+                               "required": ["to", "content"]}}},
+            {"type": "function", "function": {
+                "name": "submit_plan",
+                "description": "Submit a plan for Lead approval.",
+                "parameters": {"type": "object",
+                               "properties": {"plan": {"type": "string"}},
+                               "required": ["plan"]}}},
+            # s17 新增：队友可以列出、认领和完成任务
+            {"type": "function", "function": {
+                "name": "list_tasks",
+                "description": "List all tasks on the board.",
+                "parameters": {"type": "object", "properties": {},
+                               "required": []}}},
+            {"type": "function", "function": {
+                "name": "claim_task",
+                "description": "Claim a pending task.",
+                "parameters": {"type": "object",
+                               "properties": {"task_id": {"type": "string"}},
+                               "required": ["task_id"]}}},
+            {"type": "function", "function": {
+                "name": "complete_task",
+                "description": "Mark an in-progress task as completed.",
+                "parameters": {"type": "object",
+                               "properties": {"task_id": {"type": "string"}},
+                               "required": ["task_id"]}}},
+        ]
+        return base + protocol
+
+    def _exec(self, name: str, tool_name: str, args: dict) -> str:
+        """执行队友的工具调用。"""
+        if tool_name == "bash":
+            return self.tools.run_bash(args.get("command", ""))
+        if tool_name == "run_read":
+            return self.tools.run_read(args.get("path", ""), args.get("limit"))
+        if tool_name == "run_write":
+            return self.tools.run_write(args.get("path", ""), args.get("content", ""))
+        if tool_name == "run_read_pdf":
+            kwargs = {"path": args.get("path", "")}
+            if args.get("max_pages") is not None:
+                kwargs["max_pages"] = args["max_pages"]
+            if args.get("chars_per_page") is not None:
+                kwargs["chars_per_page"] = args["chars_per_page"]
+            return self.tools.run_read_pdf(**kwargs)
+        if tool_name == "send_message":
+            self._send(name, args.get("to", ""), args.get("content", ""))
+            return "Sent"
+        if tool_name == "submit_plan":
+            return self._teammate_submit_plan(name, args.get("plan", ""))
+        if tool_name == "list_tasks":
+            tasks = self.tools.task_manager._list_tasks()
+            if not tasks:
+                return "No tasks."
+            return "\n".join(
+                f"  {t.id}: {t.subject} [{t.status}]"
+                for t in tasks)
+        if tool_name == "claim_task":
+            return self.tools.task_manager._claim_task(
+                args.get("task_id", ""), owner=name)
+        if tool_name == "complete_task":
+            return self.tools.task_manager._complete_task(args.get("task_id", ""))
+        return f"Unknown tool: {tool_name}"
+
+    def _teammate_submit_plan(self, from_name: str, plan: str) -> str:
+        """队友向 Lead 提交计划等待审批。"""
+        req_id = self.new_request_id()
+        self.pending_requests[req_id] = ProtocolState(
+            request_id=req_id, type="plan_approval",
+            sender=from_name, target="lead",
+            status="pending", payload=plan)
+        self._send(from_name, "lead", plan,
+                      "plan_approval_request",
+                      {"request_id": req_id})
+        return f"Plan submitted ({req_id}). Waiting for approval..."
+
+    # ═══════════════════════════════════════════════════════════
+    #  Lead 协议工具（来自 s16）：关闭请求 / 计划审批
+    # ═══════════════════════════════════════════════════════════
+
+    def request_shutdown(self, teammate: str) -> str:
+        """请求指定队友优雅关闭。"""
+        req_id = self.new_request_id()
+        self.pending_requests[req_id] = ProtocolState(
+            request_id=req_id, type="shutdown",
+            sender="lead", target=teammate,
+            status="pending", payload="")
+        self._send("lead", teammate, "Please shut down gracefully.",
+                      "shutdown_request",
+                      {"request_id": req_id})
+        print(f"  \033[35m[protocol] shutdown_request → {teammate} "
+              f"({req_id})\033[0m")
+        return f"Shutdown request sent to {teammate} (req: {req_id})"
+
+    def request_plan(self, teammate: str, task: str) -> str:
+        """Lead 要求队友提交一份计划。"""
+        self._send("lead", teammate, f"Please submit a plan for: {task}",
+                      "message")
+        return f"Asked {teammate} to submit a plan"
+
+    def review_plan(self, request_id: str, approve: bool,
+                    feedback: str = "") -> str:
+        """审批或拒绝队友提交的计划。"""
+        state = self.pending_requests.get(request_id)
+        if not state:
+            return f"Request {request_id} not found"
+        if state.status != "pending":
+            return f"Request {request_id} already {state.status}"
+        state.status = "approved" if approve else "rejected"
+        self._send("lead", state.sender,
+                      feedback or ("Approved" if approve else "Rejected"),
+                      "plan_approval_response",
+                      {"request_id": request_id, "approve": approve})
+        icon = "✓" if approve else "✗"
+        print(f"  \033[32m[protocol] plan {icon} ({request_id})\033[0m")
+        return f"Plan {'approved' if approve else 'rejected'} ({request_id})"
+
+    # ═══════════════════════════════════════════════════════════
+    #  Lead 邮箱消费（路由协议响应 + 注入队友消息到对话历史）
+    # ═══════════════════════════════════════════════════════════
+
+    def send_message(self, to: str, content: str) -> str:
+        """Lead 向队友发送普通消息。"""
+        self._send("lead", to, content)
+        return f"Sent to {to}"
+
+    def consume_lead_inbox(self, route_protocol: bool = True) -> list[dict]:
+        """读取 Lead 的邮箱：路由协议响应，返回所有消息。"""
+        msgs = self.bus.read_inbox("lead")
+        if route_protocol:
+            for msg in msgs:
+                req_id = msg.get("request_id", "")
+                msg_type = msg.get("type", "")
+                if req_id and msg_type.endswith("_response"):
+                    self.match_response(msg_type, req_id,
+                                        msg.get("approve", False))
+        return msgs
+
+    def check_inbox(self) -> str:
+        """检查 Lead 的邮箱，路由协议消息，返回格式化后的消息列表。"""
+        msgs = self.consume_lead_inbox(route_protocol=True)
+        if not msgs:
+            return "(inbox empty)"
+        lines = []
+        for m in msgs:
+            req_id = m.get("request_id", "")
+            tag = f" [{m['type']} req:{req_id}]" if req_id else f" [{m['type']}]"
+            lines.append(f"  [{m['from']}]{tag} {m['content'][:200]}")
+        return "\n".join(lines)

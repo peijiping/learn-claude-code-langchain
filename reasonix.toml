@@ -1,0 +1,2 @@
+[permissions]
+allow = ["Bash=cp agents/anthropic_v2/s13_background_tasks/s13_code.py /tmp/s13_orig.py && wc -l agents/anthropic_v2/s13_background_tasks/s13_code.py"]

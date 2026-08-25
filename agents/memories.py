@@ -13,7 +13,7 @@ memories.py - 持久化记忆管理
 
 from pathlib import Path
 
-from tool_base import MEMORY_DIR
+from paths import MEMORY_DIR
 
 
 # ═══════════════════════════════════════════════════════════
@@ -92,7 +92,7 @@ class MemoryStore:
                 f"---\nname: {name}\ndescription: {description}\ntype: {mem_type}\n---\n\n{body}\n"
             )
             self._rebuild_index()
-            print(f"\033[33m[Memory saved: {name} ({mem_type})]\033[0m")
+            # print(f"\033[33m[Memory saved: {name} ({mem_type})]\033[0m")
             return f"Saved memory to {filepath.name}"
         except Exception as e:
             return f"Error saving memory: {e}"
@@ -112,7 +112,7 @@ class MemoryStore:
                     return f"Error: memory '{name}' not found"
             path.unlink()
             self._rebuild_index()
-            print(f"\033[33m[Memory deleted: {name}]\033[0m")
+            # print(f"\033[33m[Memory deleted: {name}]\033[0m")
             return f"Deleted memory '{name}'"
         except Exception as e:
             return f"Error deleting memory: {e}"

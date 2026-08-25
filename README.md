@@ -33,16 +33,23 @@
 
 `agents/` 根目录下的模块就是我的 OpenAI SDK 版实现：
 
-- `agent_full_v2.py` —— **v2 智能体主入口**（REPL）
+- `agent_full_v2.py` —— **v2 智能体引擎**（Agent 类，多实例支持）
+- `agent_cli.py` —— **REPL 交互入口**（实例化 Agent + CronScheduler）
 - `llm_manage.py` —— 兼容 reasoning 模型的 `OpenAI` 原生客户端封装
+- `system_prompt.py` —— System Prompt 运行时组装（静态/动态分段 + cache boundary）
 - `session_manage.py` —— 会话管理（新建 / 切换 / 清空 / 持久化）
 - `subagent.py` —— 子智能体（隔离上下文的探索者）
-- `tools.py` / `tools_base.py` —— 工具注册表 & 父级工具集
+- `tools.py` —— 工具注册表（ToolRegistry 类，合并原 tool_base）
+- `cron_scheduler.py` —— Cron 定时调度器（s14，CronScheduler 类）
 - `skills.py` —— skill loader（按需加载知识）
+- `memories.py` —— Tool 驱动持久化记忆（`write_memory` / `forget_memory`，MEMORY.md 索引常驻）
 - `todo_manager.py` —— TodoWrite（短清单）
 - `task_manager.py` —— 文件式 Task System（`blockedBy` / `blocks` 依赖图）
 - `background_manager.py` —— 后台任务（线程池 + 通知队列）
-- `compact.py` —— 三层上下文压缩（micro / auto / 阈值触发）
+- `context_compact.py` —— 三层上下文压缩（micro / auto / 阈值触发）
+- `error_recovery.py` —— 错误恢复状态机（429/503 退避 / max_tokens 升级 / prompt 超长压缩 / 兜底 abort）
+- `hooks.py` —— Hook 系统（UserPromptSubmit / PreToolUse / PostToolUse / Stop 四类事件）
+- `check_permission.py` —— 权限三闸门（硬拒绝 / 规则匹配 / 用户确认）
 - `message_bus.py` —— 队友间 JSONL 邮箱
 - `teammate_manager.py` —— 持久队友 + idle 自循环
 - `history/v1`、`history/v2` —— 之前写过的 v1 / v2 早期版本归档
@@ -108,22 +115,22 @@ def agent_loop(messages):
 
 中文学习笔记放在 `agents/anthropic/docs/zh/`。
 
-### 🚧 v2（s01–s08 已学完，s09+ 待学） —— 20 节课，更完整的 Harness
+### 🚧 v2（s01–s14 已学完，s15+ 待学） —— 20 节课，更完整的 Harness
 
 代码在 [`agents/anthropic_v2/`](./agents/anthropic_v2) 目录。
 
 v2 把 v1 的 12 节课扩展到 20 节，引入了 v1 没单拆出来的关键能力 —— **权限系统、Hooks、记忆子系统、错误恢复、Cron 调度、MCP 插件**，并按"动手 → 复杂任务 → 记忆恢复 → 长任务 → 协作 → 扩展装配"的链路重排了顺序，更贴近真实工程。
 
-| 阶段 | 课程 | 新增能力 |
-|------|------|----------|
-| **Stage 1 · 让 Agent 动手** | s01 Agent Loop / s02 Tool Use / **s03 Permission** / **s04 Hooks** | 工具 + 权限 + 扩展点 |
-| **Stage 2 · 处理复杂任务** | s05 TodoWrite / s06 Subagent / s08 Context Compact | 计划 + 子任务 + 上下文压缩 |
-| **Stage 3 · 记忆与恢复** | **s09 Memory** / **s10 System Prompt** / **s11 Error Recovery** | 记忆 + 提示词装配 + 错误恢复 |
+| 阶段 | 课程 | 新增能力 | 状态 |
+|------|------|----------|------|
+| **Stage 1 · 让 Agent 动手** | s01 Agent Loop / s02 Tool Use / **s03 Permission** / **s04 Hooks** | 工具 + 权限 + 扩展点 | ✅ 已学完 |
+| **Stage 2 · 处理复杂任务** | s05 TodoWrite / s06 Subagent / s08 Context Compact | 计划 + 子任务 + 上下文压缩 | ✅ 已学完 |
+| **Stage 3 · 记忆与恢复** | **s09 Memory** / **s10 System Prompt** / **s11 Error Recovery** | 记忆 + 提示词装配 + 错误恢复 | ✅ 已学完 |
 
 > **注意**：s09 教程代码是"事后分析"模式（每轮结束额外调 LLM 抽取记忆），我自己的实现改成了 **Tool 驱动模式** — 模型通过 `write_memory`/`forget_memory` 工具即时写入，更贴合真实 CC 的行为。详见 [`s09_code_cc.py`](agents/anthropic_v2/s09_memory/s09_code_cc.py)。
-| **Stage 4 · 跑长任务** | s12 Task System / s13 Background Tasks / **s14 Cron Scheduler** | 任务系统 + 后台 + 定时 |
-| **Stage 5 · 多人协作** | s15 Agent Teams / s16 Team Protocols / s17 Autonomous Agents / s18 Worktree Isolation | 团队 + 协议 + 自组织 + 隔离 |
-| **Stage 6 · 扩展装配** | s07 Skill Loading / **s19 MCP Plugin** / **s20 Comprehensive** | 技能 + MCP + 集成 |
+| **Stage 4 · 跑长任务** | s12 Task System / s13 Background Tasks / **s14 Cron Scheduler** | 任务系统 + 后台 + 定时 | ✅ 已学完 |
+| **Stage 5 · 多人协作** | s15 Agent Teams / s16 Team Protocols / s17 Autonomous Agents / s18 Worktree Isolation | 团队 + 协议 + 自组织 + 隔离 | ⏳ 待学 |
+| **Stage 6 · 扩展装配** | s07 Skill Loading / **s19 MCP Plugin** / **s20 Comprehensive** | 技能 + MCP + 集成 | ⏳ 待学 |
 
 v2 的特点是每节都是独立文件夹：`README.md`（中文）+ `README.en.md`（英文）+ `code.py`（可运行）+ `images/`（SVG 图）。
 
@@ -136,16 +143,23 @@ learn-claude-code-main/
 ├── agents/
 │   │
 │   │  # === 🛠️ 我自己用 OpenAI SDK 重写的 v2 智能体（主入口在这里）===
-│   ├── agent_full_v2.py          # ⭐ v2 智能体主入口（REPL）
+│   ├── agent_full_v2.py          # ⭐ v2 智能体引擎（Agent 类，多实例支持）
+│   ├── agent_cli.py              # ⭐ REPL 交互入口（实例化 Agent + CronScheduler）
 │   ├── llm_manage.py             # OpenAI 原生客户端封装（兼容 reasoning 模型）
+│   ├── system_prompt.py          # System Prompt 运行时组装（s10）
 │   ├── session_manage.py         # 会话管理
 │   ├── subagent.py               # 子智能体
-│   ├── tools.py / tools_base.py  # 工具注册表
+│   ├── tools.py                   # 工具注册表（ToolRegistry 类）
+│   ├── cron_scheduler.py         # Cron 定时调度器（s14，CronScheduler 类）
 │   ├── skills.py                 # skill loader
+│   ├── memories.py               # Tool 驱动持久化记忆（s09）
 │   ├── todo_manager.py           # TodoWrite
 │   ├── task_manager.py           # 文件式任务系统
 │   ├── background_manager.py     # 后台任务 + 通知
-│   ├── compact.py                # 上下文压缩
+│   ├── context_compact.py        # 上下文压缩（三层）
+│   ├── error_recovery.py         # 错误恢复状态机（s11）
+│   ├── hooks.py                  # Hook 系统（s04）
+│   ├── check_permission.py       # 权限三闸门（s03，尚未接入主循环）
 │   ├── message_bus.py            # 队友邮箱
 │   ├── teammate_manager.py       # 队友 + idle 循环
 │   ├── history/                  # 早期版本归档（v1 / v2）
@@ -191,18 +205,23 @@ learn-claude-code-main/
 3. **并发** —— 同一轮内 `parallel=true` 的工具用 `ThreadPoolExecutor` 并行跑，串行的按顺序。
 4. **后台任务** —— `background_manager.py` 起线程跑长命令，结果通过通知队列在下轮注入。
 5. **任务看板** —— `task_manager.py` 文件式 + 依赖图（`blockedBy` / `blocks`）。
-6. **TodoWrite** —— `todo_manager.py` 短清单 + nag 提醒。
+6. **TodoWrite** —— `todo_manager.py` 短清单 + nag 提醒；todo 文件与 session 绑定（`.todo/session_<N>.todo.json` ↔ `.chathistory/session_<N>.jsonl`），会话恢复/切换时自动注入 `<system-reminder>` 提醒模型继续未完成任务。详见下方"踩坑记录 → Todo 与 session 绑定 + 崩溃恢复"。
 7. **Skill 加载** —— `skills.py` 按需把 SKILL.md 注入 `tool_result`。
-8. **上下文压缩** —— `compact.py` 三层策略：micro 清理旧 tool_result / auto LLM 总结 / 阈值触发。
+8. **上下文压缩** —— `context_compact.py` 三层策略：micro 清理旧 tool_result / auto LLM 总结 / 阈值触发。
 9. **子智能体** —— `subagent.py` 隔离上下文，按 `allowed_tools` 控制权限。
 10. **会话管理** —— `session_manage.py` 支持新建 / 切换 / 清空 / 持久化 jsonl。
 11. **队友协作** —— `message_bus.py` JSONL 邮箱 + `teammate_manager.py` 持久队友 + idle 循环。
 12. **Reasoning 模型兼容** —— `llm_manage.py` 包装原生 `OpenAI` 客户端，兼容 reasoning 模型，保留 `reasoning_content` 多轮回传。
 13. **记忆系统** —— s09 教程拆分为 Tool 驱动模式：`write_memory`/`forget_memory` 工具由模型自主调用，MEMORY.md 索引常驻 system prompt，零额外 LLM 开销。详见 [`s09_code_cc.py`](agents/anthropic_v2/s09_memory/s09_code_cc.py)。
+14. **System Prompt 组装** —— s10 把硬编码 `SYSTEM` 拆成 section（工具规范 / 记忆索引 / 技能描述 / 工作目录），运行时按状态拼接，并用 `STATIC_BOUNDARY` 标记静态/动态边界以命中 prompt cache。见 [`system_prompt.py`](agents/system_prompt.py)。
+15. **错误恢复** —— s11 状态机封装：429/503 内层指数退避重试、连续 503 切 `FALLBACK_MODEL`、`max_tokens` 截断两阶段恢复（升级到 64K → 续写 prompt）、prompt 超长触发 reactive compact、不可恢复错误 abort。见 [`error_recovery.py`](agents/error_recovery.py)。
+16. **Hooks 系统** —— s04 四类事件（`UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`），`PreToolUse` 回调返回非 None 视为阻断信号。默认 hooks 已注册；权限闸门 `check_permission.py` 接入后将在此拦截危险工具调用。见 [`hooks.py`](agents/hooks.py)。
+17. **Cron 定时调度** —— s14 三层解耦架构（调度线程 → 任务队列 → 队列处理器），通过 `schedule_cron` / `list_crons` / `cancel_cron` 工具由大模型对话创建定时任务。与教程的关键差异见下方 [s14 与教程的差异](#s14-与教程的差异)。见 [`cron_scheduler.py`](agents/cron_scheduler.py)。
 
 **接下来要做的**：
 
-- v2 教程里还剩 **s19 MCP 插件** 没接入自己的实现
+- 跟 v2 教程继续推进：s15-s18 协作链 → **s19 MCP 插件** → s20 综合
+- 把权限闸门 `check_permission.py` 真正接进主循环（目前 `agent_full_v2.py` 顶部导入被注释，三闸门尚未在 `agent_loop` 里启用）
 - 把 subagent / teammate 的事件接进 **Hooks**（PreToolUse / PostToolUse 插桩），便于做轨迹采集
 - 把任务系统迁移到 **State Graph 编排**，验证"图编排"和"while 循环"两种范式都能覆盖同一套机制
 
@@ -216,7 +235,7 @@ pip install -r requirements.txt
 cp .env.example .env   # 配置 OPENAI_MODEL_ID / OPENAI_API_KEY / OPENAI_BASE_URL
 
 # 2. ⭐ 跑我自己用 OpenAI SDK 重写的 v2 智能体（主入口）
-python agents/agent_full_v2.py
+python agents/agent_cli.py
 
 # 3. 看教程代码（只读，对照参考）
 #    v1（已学完，12 节课）
@@ -232,7 +251,7 @@ cd agents/anthropic_v2/web && npm install && npm run dev
 # → http://localhost:3000
 ```
 
-**REPL 命令**（`agent_full_v2.py` 内置）：
+**REPL 命令**（`agent_cli.py` 内置）：
 
 | 命令 | 作用 |
 |------|------|
@@ -265,6 +284,75 @@ cd agents/anthropic_v2/web && npm install && npm run dev
 - **解法**：[`agents/session_manage.py::_sanitize_orphan_tool_calls`](./agents/session_manage.py#L187) 在加载时扫描，对每个带 `tool_calls` 的 `AIMessage` 校验紧随其后的 `ToolMessage` 是否覆盖了全部 `tool_call_id`，缺失则把该 `AIMessage` 以及后续错位的 `ToolMessage` 一起丢弃。
 - **为什么删而不是补**：被中断的 tool 实际执行结果未知，编造 `ToolMessage` content 等于喂给模型假数据，反而污染后续推理；删除是唯一安全选择。
 - **教训**：上策是从源头消灭——在 `_save_message` 层调整落盘顺序（先 `fsync` tool_result 再 commit ai_message，或 `os.replace` 原子写），让孤儿消息根本不产生。
+
+### Todo 与 session 绑定 + 崩溃恢复
+
+相比 v1 教程的 `TodoManager`（`agents/anthropic/s03_todo_write.py` 里的纯内存版），v2 我做了**两处鲁棒性增强**：
+
+- todo **落盘** —— 写到 `WorkSpace/task1/.todo/session_<N>.todo.json`，`TodoManager.__init__` 立刻 `load()`，进程崩溃后内存里的 todo 仍是上次状态
+- todo **与 session 绑定** —— 不再是全局单文件，而是和 `.chathistory/session_<N>.jsonl` 用同一个 N 串起来，切换 session 时 `set_todo_manager(N)` 重新指向对应文件，不同会话的 todo 完全隔离
+- 启动恢复 **reminder** —— 仅落盘还不够，system prompt 不会渲染 todo，模型不主动调工具就察觉不到。所以 `agent_full_v2.py::_inject_todo_reminder` 在 `init_session` 和 `/switchsession N` 之后，若 `has_open_items()` 为真就注入一条 `role: user` 的 `<system-reminder>` 消息，把当前 todo 列表贴进去，模型下一轮必看到
+
+**关键坑位**（修复前）：
+
+- `TODO_FILE = TODO_DIR / "todo.json"` 是全局路径，session 切换时 todo 不跟着切，session_1 写的 todo 在 session_2 也能看到
+- 进程崩溃后 todo 确实能 reload 进内存（`TodoManager.__init__` → `self.load()`），但模型**意识不到**有未完成项——因为 system prompt 只写"如何使用 todo 工具"的规范，不展示当前 todo 列表，模型如果不主动调 `todo` 或 `/tasks`，完全感受不到
+- `/clearsession` 只清 chat history，**忘了**清 todo，会话清空后旧 todo 还在
+
+**修改落点**：
+
+- [`agents/tool_base.py`](agents/tool_base.py) —— 删 `TODO_FILE` 常量，加 `todo_file_for_session(session_num)` 工厂 + `TODO_DIR.mkdir`
+- [`agents/tools.py`](agents/tools.py) —— 删全局 `TODO_MANAGER`，加 `_TODO_MANAGER_HOLDER` + `set_todo_manager` / `get_todo_manager`；`TOOL_HANDLERS["todo"]` 改为 `get_todo_manager().update(...)`
+- [`agents/agent_full_v2.py`](agents/agent_full_v2.py) —— 新增 `_inject_todo_reminder`；在 `init_session` / `/switchsession N` 后调用 `set_todo_manager` + reminder；`/clearsession` 同步 `update([], fresh_start=False)` 重置 todo；`agent_loop` 里 `TODO_MANAGER.xxx` 改 `get_todo_manager().xxx`
+
+**reminder 注入示例**：
+
+```text
+<system-reminder>本次会话检测到上次有未完成的待办事项：
+Todos (2/5 completed):
+  [x] #1: 从19篇论文中提取DRG成本管控相关指标
+  [x] #2: 设计指标体系框架（维度-二级指标-三级指标）
+  [>] #3: 撰写指标体系研究文档（含权重方法与评分标准）
+  [ ] #4: 校验数据
+  [ ] #5: 检查交付
+请在继续之前确认是否继续执行；如果任务已不再相关，请用 todo 工具把对应项标记为 completed，
+或开启新计划（fresh_start=true 整体替换）。</system-reminder>
+```
+
+**为什么 reminder 落盘** —— 注入 `history_messages` 的同时也写进 `session_file`，下次启动 reload 仍可见；否则下次重启模型又"失忆"。
+
+---
+
+## s14 与教程的差异
+
+s14 教程采用「消费者线程抢 `agent_lock` → 注入共享 messages → 主 agent_loop 消费」的模式，cron 任务的执行结果混在主会话中，不产生独立会话记录。
+
+我的实现改为**每触发一次 cron 任务创建独立 Agent 实例**，核心差异：
+
+| 维度 | 教程 s14 | 我的实现 |
+|------|---------|---------|
+| 队列消费 | 抢 `agent_lock`，注入共享 messages | 创建独立 `Agent(session_prefix="cron_")` 实例 |
+| 会话文件 | 无独立会话，混在主会话中 | 每个触发任务一个 `cron_{N}.jsonl`，存储在 `.chathistory/` |
+| 与主 REPL 关系 | 共享 `agent_lock`，互斥 | 完全隔离，独立 Agent 实例互不干扰 |
+| 会话可见性 | 混在主会话中，难以追溯 | 执行完成后 `cron_{N}.jsonl` 可作为独立会话查看 |
+| 持久化 | `.scheduled_tasks.json` | `.scheduler/scheduled_tasks.json`（子目录隔离） |
+
+**架构**（保留教程三层设计）：
+
+```
+调度线程（每秒轮询）→ cron_queue → 队列处理器
+                                    ↓
+                          Agent(session_prefix="cron_")
+                          → init_session(resume=False)
+                          → run_turn("[Scheduled] {prompt}")
+                          → cron_{N}.jsonl 落盘
+```
+
+**关键模块**：
+- [`cron_scheduler.py`](agents/cron_scheduler.py) — `CronScheduler` 类（调度线程 + 队列处理器 + 工具包装）
+- [`tools.py`](agents/tools.py) — `schedule_cron` / `list_crons` / `cancel_cron` 工具定义
+- [`agent_cli.py`](agents/agent_cli.py) — 启动时创建 `CronScheduler` 实例并注入
+- [`session_manage.py`](agents/session_manage.py) — `session_prefix` 参数支持 `cron_` 前缀独立编号
 
 ---
 

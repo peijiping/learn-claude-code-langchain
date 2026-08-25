@@ -9,7 +9,7 @@ subagent.py - 通用型子智能体模块
 import os
 import json
 
-from tools import WORKDIR
+from paths import WORKDIR
 from hooks import HookSystem
 from llm_manage import LLMClient
 
@@ -55,12 +55,30 @@ class SubAgent:
 
     @staticmethod
     def _extract_content(response) -> str:
-        """从 LLM 响应中提取文本内容"""
-        if not hasattr(response, "content"):
-            return ""
-        if isinstance(response.content, list):
-            return "".join(b.text for b in response.content if hasattr(b, "text"))
-        return str(response.content) if response.content else ""
+        """
+        从 LLM 响应中提取文本内容。
+
+        同时兼容 dict（model_dump() 的产物）和 Pydantic 对象两种入参。
+        当 content 为空时回退到 reasoning_content，确保 thinking 模式下
+        即使被 max_tokens 截断也能拿到可读内容，避免误判为 "(no summary)"。
+        """
+        if isinstance(response, dict):
+            content = response.get("content") or ""
+            reasoning = response.get("reasoning_content") or ""
+        else:
+            content = getattr(response, "content", "") or ""
+            reasoning = getattr(response, "reasoning_content", "") or ""
+
+        # content 是 list（如 OpenAI 多模态）时，拼接 text 块
+        if isinstance(content, list):
+            content = "".join(
+                (b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
+                for b in content
+            )
+
+        if content:
+            return str(content)
+        return str(reasoning)
 
     def spawn_subagent(
         self,
@@ -99,20 +117,20 @@ class SubAgent:
         sub_messages.append({"role": "user", "content": prompt})
 
         tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
-        print(f"  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...")
+        print(f"\033[2;91m  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...\033[0m")
 
         sub_response = None
         for iteration in range(self.MAX_ITERATIONS):
             try:
                 sub_response = self.sub_llm_client.chat.completions.create(
-                    model=self.model,
-                    messages=sub_messages,
-                    tools=sub_tools,
-                    stream=False, #是否流式输出，默认 False
-                    max_tokens=4000,
-                    temperature=0.5,
-                    reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
-                    extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
+                model=self.model,
+                messages=sub_messages,
+                tools=sub_tools,
+                stream=False, #是否流式输出，默认 False
+                max_tokens=int(os.environ.get("SUBAGENT_MAX_TOKENS") or 8000),
+                temperature=0.5,
+                reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
+                extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
         )
             except Exception as e:
                 error_msg = f"子智能体 API 调用失败 (第 {iteration + 1} 轮): {type(e).__name__}: {e}"
@@ -162,7 +180,7 @@ class SubAgent:
                     }
                 sub_messages.append(result)
 
-            print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_msg.tool_calls)} 个工具调用")
+            # print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_msg.tool_calls)} 个工具调用")
 
         # 达到最大轮次，尝试从最后一轮响应中提取内容返回
         last_msg = sub_response.choices[0].message
