@@ -42,9 +42,12 @@ class SubAgent:
 
     MAX_ITERATIONS = 100
 
-    def __init__(self, base_tools: list, tool_handlers: dict, hook_system: HookSystem | None = None):
+    def __init__(self, base_tools: list, tool_handlers: dict, hook_system: HookSystem | None = None, tool_registry=None):
         self.base_tools = base_tools
         self.tool_handlers = tool_handlers
+        # tool_registry：可选，注入 ToolRegistry 实例，用于在 workdir 场景下生成
+        # scoped_handlers(cwd)（文件工具以 worktree 为工作根）。None 时退化为共用 handlers。
+        self.tool_registry = tool_registry
         # 未显式传入时,SubAgent 内部自实例化一次独立的 hook_system
         if hook_system is None:
             hook_system = HookSystem()
@@ -85,6 +88,7 @@ class SubAgent:
         prompt: str,
         system_prompt: str | None = None,
         allowed_tools: list[str] | None = None,
+        workdir=None,
     ) -> str:
         """
         执行一次子智能体任务。
@@ -102,6 +106,9 @@ class SubAgent:
             system_prompt: 自定义系统提示，为 None 时使用 DEFAULT_SYSTEM_PROMPT
             allowed_tools: 允许使用的工具名称列表，为 None 时使用全部工具。
                            例如 ["bash", "read_file", "read_pdf"] 限制为只读工具集
+            workdir: 可选，工作目录（Path 或 worktree 目录）。给定时本子任务的文件
+                     操作工具（bash/read/write/edit/glob/pdf）以该目录为工作根，
+                     系统提示追加工作目录提醒。
 
         返回:
             str: 任务执行结果的摘要文本，如果无结果则返回 "(no summary)"
@@ -111,7 +118,17 @@ class SubAgent:
         else:
             sub_tools = self.base_tools
 
-        sub_system = system_prompt or self.DEFAULT_SYSTEM_PROMPT
+        if workdir is not None and self.tool_registry is not None:
+            # worktree 场景：文件工具以 workdir 为工作根，其余工具复用共用 handlers
+            sub_handlers = self.tool_registry.scoped_handlers(workdir)
+            if system_prompt is None:
+                sub_system = (self.DEFAULT_SYSTEM_PROMPT
+                              + f"\n\n<system-reminder>你的工作目录（所有文件操作根）是：{workdir}</system-reminder>")
+            else:
+                sub_system = system_prompt
+        else:
+            sub_handlers = self.tool_handlers
+            sub_system = system_prompt or self.DEFAULT_SYSTEM_PROMPT
 
         sub_messages = [{"role": "system", "content": sub_system}]
         sub_messages.append({"role": "user", "content": prompt})
@@ -157,7 +174,7 @@ class SubAgent:
                         sub_messages.append({"role": "tool", "tool_use_id": tool_id,
                                              "content": str(blocked)})
                         continue
-                    handler = self.tool_handlers.get(tool_name)
+                    handler = sub_handlers.get(tool_name)
                     if handler:
                         try:
                             output = handler(**tool_args)

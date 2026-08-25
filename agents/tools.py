@@ -81,6 +81,7 @@ class ToolRegistry:
         self._todo_manager = None
         self._cron_scheduler = cron_scheduler  # cron 调度器（holder）
         self._teammate_manager = teammate_manager  # 团队成员管理器（holder，s17）
+        self._worktree_manager = None  # worktree 管理器（holder，s18）
 
         # ── 懒加载缓存 ──
         self._handlers_cache = None
@@ -116,6 +117,19 @@ class ToolRegistry:
         if mgr is None:
             raise RuntimeError(
                 "TeammateManager 未初始化。请先调用 set_teammate_manager(...)。"
+            )
+        return mgr
+
+    def set_worktree_manager(self, wm) -> None:
+        """由 agent_full_v2.py 在启动时调用一次，挂上 WorktreeManager 实例（s18）。"""
+        self._worktree_manager = wm
+
+    def get_worktree_manager(self):
+        """获取 WorktreeManager 实例；未初始化时抛错，提示调用方先 set_worktree_manager。"""
+        mgr = self._worktree_manager
+        if mgr is None:
+            raise RuntimeError(
+                "WorktreeManager 未初始化。请先调用 set_worktree_manager(...)。"
             )
         return mgr
 
@@ -184,33 +198,35 @@ class ToolRegistry:
         return f"{head}\n\n... [输出已截断，共 {len(text)} 字符，保留首 {head_size} + 尾 {tail_size} 字符] ...\n\n{tail}"
 
     @staticmethod
-    def safe_path(p: str) -> Path:
+    def safe_path(p: str, base: Path | None = None) -> Path:
         """
-        验证路径是否在工作目录内，防止路径遍历攻击
+        验证路径是否在指定工作根内，防止路径遍历攻击
         安全机制：
-        - 将相对路径与工作目录拼接后转换为绝对路径
-        - 检查最终路径是否仍然在 WORKDIR 内
-        - 如果路径逃逸到 WORKDIR 之外，抛出 ValueError
+        - 将相对路径与工作根（base，默认 WORKDIR）拼接后转换为绝对路径
+        - 检查最终路径是否仍然在 base 内
+        - 如果路径逃逸到 base 之外，抛出 ValueError
         参数：
             p: 相对路径字符串
+            base: 可选，工作根目录（worktree 场景传入 worktree 路径）；None 时用 WORKDIR
         返回：
             验证通过后的绝对路径(Path对象)
         异常：
-            ValueError: 当路径试图逃逸到工作目录之外时抛出
+            ValueError: 当路径试图逃逸到工作根之外时抛出
                          例如：p = "../../etc/passwd" 会被拒绝
         """
-        # 拼接工作目录和输入路径，并解析为绝对路径
+        # 拼接工作根和输入路径，并解析为绝对路径
         # .resolve() 会解析符号链接并返回绝对路径
-        path = (WORKDIR / p).resolve()
+        base = base or WORKDIR
+        path = (base / p).resolve()
 
-        # is_relative_to() 检查 path 是否在 WORKDIR 的子目录中
+        # is_relative_to() 检查 path 是否在 base 的子目录中
         # 如果 path 是 "/etc/passwd" 或 "../other_dir" 等外部路径，则拒绝
-        if not path.is_relative_to(WORKDIR):
+        if not path.is_relative_to(base):
             raise ValueError(f"Path escapes workspace: {p}")
 
         return path
 
-    def run_bash(self, command: str) -> str:
+    def run_bash(self, command: str, base: Path | None = None) -> str:
         """
         执行shell命令并返回结果
         安全特性：
@@ -219,6 +235,7 @@ class ToolRegistry:
         - 输出截断：结果最多返回50000字符，防止内存溢出
         参数：
             command: 要执行的shell命令字符串
+            base: 可选，命令的工作目录（worktree 场景传入 worktree 路径）；None 时用进程当前目录
         返回：
             命令成功：返回标准输出+标准错误的合并内容（最多50000字符）
             命令失败：返回格式 "Error: command failed with return code X\\n错误信息"
@@ -232,7 +249,7 @@ class ToolRegistry:
             r = subprocess.run(
                 command,
                 shell=True,
-                cwd=os.getcwd(),
+                cwd=base or os.getcwd(),
                 capture_output=True,
                 text=True,
                 timeout=120
@@ -247,7 +264,7 @@ class ToolRegistry:
             # 命令执行超时（超过120秒）
             return "Error: Timeout (120s)"
 
-    def run_read(self, path: str, limit: int | None = None) -> str:
+    def run_read(self, path: str, limit: int | None = None, base: Path | None = None) -> str:
         """
         读取文件内容
         功能特性：
@@ -258,19 +275,20 @@ class ToolRegistry:
         参数：
             path: 要读取的文件路径（相对路径）
             limit: 可选，限制读取的行数。默认None表示读取全部
+            base: 可选，工作根目录（worktree 场景传入 worktree 路径）；None 时用 WORKDIR
         返回：
             成功：文件内容字符串（可能被截断）
             失败：格式 "Error: {异常信息}"
         """
         try:
-            lines = self.safe_path(path).read_text().splitlines()
+            lines = self.safe_path(path, base).read_text().splitlines()
             if limit and limit < len(lines):
                 lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
             return "\n".join(lines)
         except Exception as e:
             return f"Error: {e}"
 
-    def run_read_pdf(self, path: str, max_pages: int = 5, chars_per_page: int = 3000) -> str:
+    def run_read_pdf(self, path: str, max_pages: int = 5, chars_per_page: int = 3000, base: Path | None = None) -> str:
         """
         使用 pymupdf 安全读取 PDF 文件，分页提取文本
         功能特性：
@@ -280,14 +298,15 @@ class ToolRegistry:
         - 总输出截断至 30000 字符
         参数：
             path: PDF 文件路径（相对路径）
-            max_pages: 最大读取页数，默认5页
+            max_pages: 最大读取页数，默认5
             chars_per_page: 每页最大字符数，默认3000
+            base: 可选，工作根目录（worktree 场景传入 worktree 路径）；None 时用 WORKDIR
         返回：
             成功：PDF 文本内容
             失败：格式 "Error: {异常信息}"
         """
         try:
-            fp = self.safe_path(path)
+            fp = self.safe_path(path, base)
             if not fp.exists():
                 return f"Error: File not found: {path}"
             if not str(fp).lower().endswith('.pdf'):
@@ -315,7 +334,7 @@ class ToolRegistry:
         except Exception as e:
             return f"Error: {e}"
 
-    def run_write(self, path: str, content: str) -> str:
+    def run_write(self, path: str, content: str, base: Path | None = None) -> str:
         """
         写入内容到文件
         功能特性：
@@ -326,12 +345,13 @@ class ToolRegistry:
         参数：
             path: 要写入的文件路径（相对路径）
             content: 要写入的内容字符串
+            base: 可选，工作根目录（worktree 场景传入 worktree 路径）；None 时用 WORKDIR
         返回：
             成功：格式 "Wrote {字节数} bytes to {路径}"
             失败：格式 "Error: {异常信息}"
         """
         try:
-            fp = self.safe_path(path)
+            fp = self.safe_path(path, base)
             # 自动创建父目录
             # parents=True: 递归创建所有不存在的父目录
             # exist_ok=True: 如果目录已存在不报错
@@ -342,7 +362,7 @@ class ToolRegistry:
         except Exception as e:
             return f"Error: {e}"
 
-    def run_edit(self, path: str, old_text: str, new_text: str) -> str:
+    def run_edit(self, path: str, old_text: str, new_text: str, base: Path | None = None) -> str:
         """
         替换文件中的指定文本
         功能特性：
@@ -354,13 +374,14 @@ class ToolRegistry:
             path: 要编辑的文件路径（相对路径）
             old_text: 要被替换的原文本（必须是完整的连续字符串）
             new_text: 替换后的新文本
+            base: 可选，工作根目录（worktree 场景传入 worktree 路径）；None 时用 WORKDIR
         返回：
             成功：格式 "Edited {路径}"
             失败（文本未找到）：格式 "Error: Text not found in {路径}"
             失败（其他）：格式 "Error: {异常信息}"
         """
         try:
-            fp = self.safe_path(path)
+            fp = self.safe_path(path, base)
             # 读取文件全部内容
             content = fp.read_text()
             # 检查要替换的文本是否存在于文件中
@@ -373,7 +394,7 @@ class ToolRegistry:
         except Exception as e:
             return f"Error: {e}"
 
-    def run_glob(self, pattern: str) -> str:
+    def run_glob(self, pattern: str, base: Path | None = None) -> str:
         """
         使用 glob 模块搜索匹配的文件路径
         功能特性：
@@ -381,14 +402,16 @@ class ToolRegistry:
         - 仅返回相对于工作目录的路径
         参数：
             pattern: 要匹配的文件路径模式（支持 glob 模式）
+            base: 可选，工作根目录（worktree 场景传入 worktree 路径）；None 时用 WORKDIR
         返回：
             成功：匹配的文件路径列表（每个路径占一行）
             失败：格式 "Error: {异常信息}"
         """
+        base = base or WORKDIR
         try:
             results = []
-            for match in g.glob(pattern, root_dir=WORKDIR):
-                if (WORKDIR / match).resolve().is_relative_to(WORKDIR):
+            for match in g.glob(pattern, root_dir=base):
+                if (base / match).resolve().is_relative_to(base):
                     results.append(match)
             return "\n".join(results) if results else "(no matches)"
         except Exception as e:
@@ -472,6 +495,15 @@ class ToolRegistry:
                 self.get_teammate_manager().review_plan(
                     kw["request_id"], kw["approve"], kw.get("feedback", ""))
             ),
+            # ── worktree 工具（s18）──
+            # worktree_manager 为 None 时抛 RuntimeError（与 teammate holder 语义一致）
+            "create_worktree": lambda **kw: self.get_worktree_manager().create(
+                kw["name"]),
+            "list_worktrees": lambda **kw: self.get_worktree_manager().list_all(),
+            "remove_worktree": lambda **kw: self.get_worktree_manager().remove(
+                kw["name"], kw.get("discard_changes", False)),
+            "keep_worktree": lambda **kw: self.get_worktree_manager().keep(
+                kw["name"]),
         }
 
     @property
@@ -480,6 +512,27 @@ class ToolRegistry:
         if self._handlers_cache is None:
             self._handlers_cache = self._build_handlers()
         return self._handlers_cache
+
+    def scoped_handlers(self, cwd: Path) -> dict:
+        """返回 handler 的浅拷贝，仅文件类工具改用 `base=cwd` 调用。
+
+        供子智能体 / 队友注入工作目录（worktree）使用，让文件操作落在
+        指定 cwd（如 WORKTREE_DIR/<name>）内。其余工具（todo/技能/记忆/
+        任务/团队等）复用共享 handlers，不改动 lead 的 handlers 本体。
+        """
+        scoped = self.handlers.copy()
+        scoped["bash"] = lambda **kw: self.run_bash(kw["command"], base=cwd)
+        scoped["run_read"] = lambda **kw: self.run_read(
+            kw["path"], kw.get("limit"), base=cwd)
+        scoped["run_read_pdf"] = lambda **kw: self.run_read_pdf(
+            kw["path"], kw.get("max_pages", 5), kw.get("chars_per_page", 3000),
+            base=cwd)
+        scoped["run_write"] = lambda **kw: self.run_write(
+            kw["path"], kw["content"], base=cwd)
+        scoped["run_edit"] = lambda **kw: self.run_edit(
+            kw["path"], kw["old_text"], kw["new_text"], base=cwd)
+        scoped["run_glob"] = lambda **kw: self.run_glob(kw["pattern"], base=cwd)
+        return scoped
 
     # ═══════════════════════════════════════════════════════════
     #  工具定义（初始化时传给大模型，告诉它有哪些工具可用）
@@ -722,6 +775,8 @@ class ToolRegistry:
                 }},
                 # 团队成员工具由 _team_tool_defs() 提供，避免与 tools 内联重复
                 *self._team_tool_defs(),
+                # worktree 管理工具（s18）：仅 Lead 创建/删除，两种模式都可见
+                *self._worktree_tool_defs(),
             ]
         return self._tools_cache
 
@@ -746,7 +801,9 @@ class ToolRegistry:
                                "properties": {
                                    "name": {"type": "string"},
                                    "role": {"type": "string"},
-                                   "prompt": {"type": "string"}},
+                                   "prompt": {"type": "string"},
+                                   "worktree": {"type": "string",
+                                       "description": "可选，已创建 worktree 的名称。给定时队友在 WORKTREE_DIR/<worktree> 内作业（文件操作根指向该目录）。"}},
                                "required": ["name", "role", "prompt"]}
             }},
             {"type": "function", "function": {
@@ -799,6 +856,50 @@ class ToolRegistry:
             }},
         ]
 
+    # ── worktree 管理工具定义（s18）── Lead 侧创建/删除/保留 ────────
+    def _worktree_tool_defs(self) -> list:
+        """4 个 worktree 管理工具定义（create/list/remove/keep）。
+
+        供 `tools` 属性展开使用（default/main 两种模式都可见）。子智能体/队友
+        只作为 cwd 的"消费者"（workdir/worktree 参数），不暴露这些管理工具。
+        """
+        return [
+            {"type": "function", "function": {
+                "name": "create_worktree",
+                "description": "创建带独立分支的隔离 git worktree（分支 wt/<name>，位于 WORKTREE_DIR/<name>）。"
+                               "创建时自动把主仓库 .venv/.env 等运行时软链进该目录，供 agent 在其内部运行/测试。"
+                               "仅创建工作区，不绑定任务；随后用 sub_agent(workdir=...) 或 spawn_teammate(worktree=...) 把 agent 派进去作业。",
+                "parameters": {"type": "object",
+                               "properties": {"name": {"type": "string",
+                                   "description": "worktree 名称（字母/数字/点/下划线/连字符，1-64 字符）"}},
+                               "required": ["name"]}
+            }},
+            {"type": "function", "function": {
+                "name": "list_worktrees",
+                "description": "列出所有已创建的 worktree（名称/分支/路径/供给概览）。",
+                "parameters": {"type": "object", "properties": {},
+                               "required": []}
+            }},
+            {"type": "function", "function": {
+                "name": "remove_worktree",
+                "description": "移除指定 worktree 及其专属分支。默认拒绝移除有未提交改动或未推送提交的 worktree；"
+                               "确需丢弃时传 discard_changes=true 强制移除。",
+                "parameters": {"type": "object",
+                               "properties": {
+                                   "name": {"type": "string"},
+                                   "discard_changes": {"type": "boolean",
+                                       "description": "True 时忽略未提交/未推送检查，强制移除。"}},
+                               "required": ["name"]}
+            }},
+            {"type": "function", "function": {
+                "name": "keep_worktree",
+                "description": "保留指定 worktree 供人工复核（不删除分支）。",
+                "parameters": {"type": "object",
+                               "properties": {"name": {"type": "string"}},
+                               "required": ["name"]}
+            }},
+        ]
+
     @property
     def main_agent_tools(self) -> list:
         """团队模式工具集 = 全部工具（含团队工具）+ sub_agent。
@@ -842,7 +943,10 @@ class ToolRegistry:
                     "run_in_background": {"type": "boolean", "default": False,
                         "description": "True 时把子任务丢到后台线程异步执行，立即返回后台任务 ID；"
                                        "结果通过 <task_notification> 在后续轮次通知。"
-                                       "与 parallel 互斥：传 True 时不再走并行/串行等待桶。"}
+                                       "与 parallel 互斥：传 True 时不再走并行/串行等待桶。"},
+                    "workdir": {"type": "string",
+                        "description": "可选，已创建 worktree 的名称。给定时子智能体的工作目录（所有文件操作根）为 WORKTREE_DIR/<workdir>，"
+                                       "用于在隔离 worktree 内改代码并运行测试。需先 create_worktree 创建。"}
                 },
                 "required": ["prompt", "parallel"]
             }

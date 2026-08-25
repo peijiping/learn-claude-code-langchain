@@ -107,6 +107,28 @@ class SystemPromptBuilder:
 - 想拿 ID 后回头查 → `run_in_background=true`（后台守护线程, 立即返回 bg_id）
 - 互斥规则：`run_in_background=true` 的调用不参与并行/串行桶, 永远独立后台化
 
+## Worktree（git 隔离工作区 · 默认不用，仅在复杂/隔离场景才用）
+`create_worktree` 会在 WORKTREE_DIR/<name> 建出**独立分支 wt/<name>** 的隔离副本，
+并自动把主仓库 `.venv` / `.env` 软链进去（可直接在其内运行/测试）。
+
+**默认原则**：日常绝大多数改动直接在 `{self.workdir}` 完成，**不要**为普通任务创建 worktree。
+
+**何时才用（命中任一才考虑 create_worktree）**：
+- 要在独立分支上做大改动，且**不想污染主工作区**的 git 状态
+- 多个子智能体/队友需**并行**在同一代码库的不同分支上独立开发/测试，互不干扰
+- 实验性 / 高风险改造，希望能整体还原（`remove_worktree` + 删分支即回滚）
+- 需要长期保留一份独立交付物供 review（`keep_worktree`）
+
+**何时不用（直接在当前工作目录作业）**：
+- 单文件/少量文件的常规改动、只读任务
+- 需要与当前工作区其他任务共享未提交变更
+
+**用法闭环**：先 `create_worktree(name)` → 再 `sub_agent(workdir=name, ...)` 或
+`spawn_teammate(worktree=name, ...)` 把 agent 派进该目录作业 → 完成后
+`remove_worktree(name)` 清理（`discard_changes=true` 慎用，会丢弃未提交改动）。
+
+不要跨越 worktree 之间的隔离做文件操作，它们彼此独立。
+
 # 待办与任务（两套并存，按任务特征自选）
 你拥有**轻量的 TodoWrite** 和**重型的 Task 全家桶**（create_task / list_tasks / get_task / claim_task / complete_task）。两套机制可共存，不要默认只用其中一套。
 
