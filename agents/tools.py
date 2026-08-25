@@ -867,11 +867,16 @@ class ToolRegistry:
             {"type": "function", "function": {
                 "name": "create_worktree",
                 "description": "创建带独立分支的隔离 git worktree（分支 wt/<name>，位于 WORKTREE_DIR/<name>）。"
-                               "创建时自动把主仓库 .venv/.env 等运行时软链进该目录，供 agent 在其内部运行/测试。"
+                               "创建时自动检测仓库技术栈并软链对应运行时（如 .venv、node_modules、target 等），"
+                               "供 agent 在其内部运行/测试。"
                                "仅创建工作区，不绑定任务；随后用 sub_agent(workdir=...) 或 spawn_teammate(worktree=...) 把 agent 派进去作业。",
                 "parameters": {"type": "object",
                                "properties": {"name": {"type": "string",
-                                   "description": "worktree 名称（字母/数字/点/下划线/连字符，1-64 字符）"}},
+                                   "description": "worktree 名称（字母/数字/点/下划线/连字符，1-64 字符）"},
+                                   "stack": {"type": "string",
+                                       "description": "可选，强制指定技术栈标签（不传时自动检测）。"
+                                                       "常见值：python、node/typescript、go、rust、java-maven、"
+                                                       "java-gradle、c-cpp、php、ruby、dotnet、dart-flutter、terraform。"}},
                                "required": ["name"]}
             }},
             {"type": "function", "function": {
