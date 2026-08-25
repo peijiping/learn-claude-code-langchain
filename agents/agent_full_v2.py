@@ -25,8 +25,9 @@ from session_manage import SessionManager
 from subagent import SubAgent
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
-from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR
+from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR, WORKTREE_DIR
 from tools import ToolRegistry
+from worktree import WorktreeManager
 from skills import SkillLoader
 from llm_manage import LLMClient
 from system_prompt import SystemPromptBuilder
@@ -93,13 +94,18 @@ class Agent:
         self.teammate_manager = TeammateManager(TEAM_DIR, tools=self.tools)
         self.tools.set_teammate_manager(self.teammate_manager)
 
+        # worktree 管理器（s18）：挂到本实例 tools 的 holder 上（实例级）
+        self.worktree_manager = WorktreeManager(WORKTREE_DIR)
+        self.tools.set_worktree_manager(self.worktree_manager)
+
         # 团队模式标志（粘性）：默认 False（子智能体分发模式）；
         # 由 CLI 的 /teams 置 True、/subagent 置 False，决定 agent_loop 喂哪套工具集。
         self.team_mode = False
 
-        # 子智能体：复用本实例的工具集/处理器/hooks
+        # 子智能体：复用本实例的工具集/处理器/hooks；注入 tool_registry 供 workdir 场景
         self.subagent_runner = SubAgent(
-            self.tools.base_tools, self.tools.handlers, self.hook_system
+            self.tools.base_tools, self.tools.handlers, self.hook_system,
+            tool_registry=self.tools,
         )
 
         # 系统 prompt：注入本实例的 skills / memory / tools
@@ -263,14 +269,30 @@ class Agent:
         变量导致所有闭包都引用最后一次迭代值的经典坑。
         """
         if tool_name == "sub_agent":
-            return lambda: self.subagent_runner.spawn_subagent(
-                tool_args.get("prompt", ""),
-                allowed_tools=tool_args.get("allowed_tools"),
-            )
+            return lambda: self._run_subagent(tool_args)
         elif tool_name in self.tools.handlers:
             return lambda: self.tools.execute(tool_name, **tool_args)
         else:
             return lambda: f"Error: Unknown tool {tool_name}"
+
+    def _run_subagent(self, tool_args: dict) -> str:
+        """派发 sub_agent。若传了 workdir（worktree 名称），解析为路径并注入。"""
+        prompt = tool_args.get("prompt", "")
+        workdir_name = tool_args.get("workdir")
+        if workdir_name:
+            wt = self.worktree_manager.resolve(workdir_name)
+            if not wt.exists():
+                return (f"Worktree '{workdir_name}' not found. "
+                        "Create it first via create_worktree.")
+            return self.subagent_runner.spawn_subagent(
+                prompt,
+                allowed_tools=tool_args.get("allowed_tools"),
+                workdir=wt,
+            )
+        return self.subagent_runner.spawn_subagent(
+            prompt,
+            allowed_tools=tool_args.get("allowed_tools"),
+        )
 
     def _execute_tool_call(self, tool_call) -> dict:
         """

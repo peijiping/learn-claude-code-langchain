@@ -91,6 +91,8 @@ class TeammateManager:
         self.active_teammates: dict[str, bool] = {}
         # s17 优化：每队友一个唤醒事件，Lead 发消息即 set()，消除轮询唤醒延迟
         self.wake_events: dict[str, threading.Event] = {}
+        # s18：队友 → 绑定的 worktree 路径（Path | None），文件操作以此为工作根
+        self._member_worktrees: dict[str, Path | None] = {}
 
     # ═══════════════════════════════════════════════════════════
     #  团队配置持久化（config.json）
@@ -246,8 +248,22 @@ class TeammateManager:
     #  每个队友是一个独立线程，拥有自己的消息列表和 LLM 调用循环
     # ═══════════════════════════════════════════════════════════
 
-    def spawn_teammate(self, name: str, role: str, prompt: str) -> str:
-        """生成一个自主队友智能体（独立线程）。"""
+    def spawn_teammate(self, name: str, role: str, prompt: str, worktree: str | None = None) -> str:
+        """生成一个自主队友智能体（独立线程）。
+
+        worktree: 可选，已创建 worktree 的名称。给定时队友的文件操作
+                  （bash/read/write/read_pdf）以此 worktree 为工作根。
+        """
+        # s18：解析并校验 worktree（先于重复检查，避免非法名称走到 spawn）
+        wt_path = None
+        if worktree:
+            wm = self.tools.get_worktree_manager()
+            resolved = wm.resolve(worktree)
+            if not resolved.exists():
+                return (f"Worktree '{worktree}' not found. "
+                        "Create it first via create_worktree.")
+            wt_path = resolved
+
         if name in self.active_teammates or (self.threads.get(name)
                                              and self.threads[name].is_alive()):
             return f"Teammate '{name}' already exists"
@@ -264,6 +280,7 @@ class TeammateManager:
 
         self.active_teammates[name] = True
         self.wake_events[name] = threading.Event()   # 为此队友创建唤醒事件
+        self._member_worktrees[name] = wt_path       # s18：记录队友工作目录（worktree 或 None）
         thread = threading.Thread(
             target=self._teammate_loop, args=(name, role, prompt),
             daemon=True,
@@ -304,6 +321,11 @@ class TeammateManager:
                   f"Use tools to complete tasks. "
                   f"You can list and claim tasks from the board. "
                   f"Check inbox for protocol messages.")
+        # s18：若队友被指派到 worktree，告知其工作目录（文件操作根）
+        wt_path = self._member_worktrees.get(name)
+        if wt_path:
+            system += (f"\n<system-reminder>你的工作目录（所有文件操作根）是："
+                       f"{wt_path}。在此目录内改代码并运行测试。</system-reminder>")
 
         # OpenAI 格式：首条为 system，随后为初始任务
         messages = [{"role": "system", "content": system},
@@ -449,19 +471,27 @@ class TeammateManager:
 
     def _exec(self, name: str, tool_name: str, args: dict) -> str:
         """执行队友的工具调用。"""
+        # s18：若无绑定 worktree，base=None → 主目录；有则文件操作落在 worktree 内
+        base = self._member_worktrees.get(name)
         if tool_name == "bash":
-            return self.tools.run_bash(args.get("command", ""))
+            return self.tools.run_bash(args.get("command", ""), base=base)
         if tool_name == "run_read":
-            return self.tools.run_read(args.get("path", ""), args.get("limit"))
+            return self.tools.run_read(args.get("path", ""), args.get("limit"), base=base)
         if tool_name == "run_write":
-            return self.tools.run_write(args.get("path", ""), args.get("content", ""))
+            return self.tools.run_write(args.get("path", ""), args.get("content", ""), base=base)
+        if tool_name == "run_edit":
+            return self.tools.run_edit(
+                args.get("path", ""), args.get("old_text", ""),
+                args.get("new_text", ""), base=base)
+        if tool_name == "run_glob":
+            return self.tools.run_glob(args.get("pattern", ""), base=base)
         if tool_name == "run_read_pdf":
             kwargs = {"path": args.get("path", "")}
             if args.get("max_pages") is not None:
                 kwargs["max_pages"] = args["max_pages"]
             if args.get("chars_per_page") is not None:
                 kwargs["chars_per_page"] = args["chars_per_page"]
-            return self.tools.run_read_pdf(**kwargs)
+            return self.tools.run_read_pdf(**kwargs, base=base)
         if tool_name == "send_message":
             self._send(name, args.get("to", ""), args.get("content", ""))
             return "Sent"
