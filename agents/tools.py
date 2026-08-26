@@ -82,6 +82,7 @@ class ToolRegistry:
         self._cron_scheduler = cron_scheduler  # cron 调度器（holder）
         self._teammate_manager = teammate_manager  # 团队成员管理器（holder，s17）
         self._worktree_manager = None  # worktree 管理器（holder，s18）
+        self._mcp_manager = None  # MCP 管理器（holder，s19）
 
         # ── 懒加载缓存 ──
         self._handlers_cache = None
@@ -130,6 +131,19 @@ class ToolRegistry:
         if mgr is None:
             raise RuntimeError(
                 "WorktreeManager 未初始化。请先调用 set_worktree_manager(...)。"
+            )
+        return mgr
+
+    def set_mcp_manager(self, mm) -> None:
+        """由 agent_full_v2.py 在启动时调用一次，挂上 MCPManager 实例（s19）。"""
+        self._mcp_manager = mm
+
+    def get_mcp_manager(self):
+        """获取 MCPManager 实例；未初始化时抛错，提示调用方先 set_mcp_manager。"""
+        mgr = self._mcp_manager
+        if mgr is None:
+            raise RuntimeError(
+                "MCPManager 未初始化。请先调用 set_mcp_manager(...)。"
             )
         return mgr
 
@@ -504,6 +518,16 @@ class ToolRegistry:
                 kw["name"], kw.get("discard_changes", False)),
             "keep_worktree": lambda **kw: self.get_worktree_manager().keep(
                 kw["name"]),
+            # ── MCP 工具（s19）──
+            # mcp_manager 为 None 时返回占位错误（与 cron 工具一致的 holder 语义）
+            "connect_mcp": lambda **kw: (
+                self._mcp_manager.connect(kw["name"])
+                if self._mcp_manager else "Error: MCP not available"
+            ),
+            "list_mcp": lambda **kw: (
+                "Available MCP servers:\n" + self._mcp_manager.catalog_text()
+                if self._mcp_manager else "Error: MCP not available"
+            ),
         }
 
     @property
@@ -777,6 +801,9 @@ class ToolRegistry:
                 *self._team_tool_defs(),
                 # worktree 管理工具（s18）：仅 Lead 创建/删除，两种模式都可见
                 *self._worktree_tool_defs(),
+                # MCP 发现工具（s19）：connect_mcp（name 枚举可用服务器）+ list_mcp（查目录），
+                # 连上后其 mcp__* 工具由 build_agent_tools() 动态追加（见 _mcp_tool_defs）
+                *self._mcp_discovery_tool_defs(),
             ]
         return self._tools_cache
 
@@ -905,6 +932,73 @@ class ToolRegistry:
             }},
         ]
 
+    # ── MCP 发现工具定义（s19）──────────────────────────────
+    def _mcp_discovery_tool_defs(self) -> list:
+        """MCP 「发现」工具定义：connect_mcp（name 枚举可用服务器）+ list_mcp（查目录）。
+
+        痛点：仅靠 connect_mcp 时，LLM 不知道存在哪些服务器、能力藏在哪个 MCP 里，
+        只能靠“猜名字”瞎试。这里动态读 MCPManager 的可连接目录（available_servers /
+        catalog_text），让 LLM 在调用前就知道「有哪些服务器、各自提供哪些工具」，
+        从而作出是否 connect、连哪个的决定。
+
+        仍**不预加载**各工具的完整参数 schema——连接成功后才由 build_agent_tools() 动态
+        追加 mcp__{server}__{tool}，保持 s19「动态工具池、省 token」的设计。
+        manager 未注入时 name 枚举降级为空、目录文本提示未配置。
+        """
+        mgr = self._mcp_manager
+        enum = list(mgr.available_servers()) if mgr else []
+        catalog_txt = mgr.catalog_text() if mgr else ""
+
+        connect_def = {"type": "function", "function": {
+            "name": "connect_mcp",
+            "description": (
+                "Connect to an MCP server and discover its tools. After connecting, the "
+                "discovered tools become available as mcp__{server}__{tool} in subsequent "
+                "rounds (dynamic tool pool). "
+                "Choose the server whose exposed capability matches what you need.\n"
+                "Available servers:" + ("\n" + catalog_txt if catalog_txt else " none")
+            ),
+            "parameters": {"type": "object",
+                           "properties": {"name": {"type": "string",
+                               "enum": enum,
+                               "description": "MCP server name to connect."}},
+                           "required": ["name"]}
+        }}
+
+        list_def = {"type": "function", "function": {
+            "name": "list_mcp",
+            "description": "List available MCP servers and the tools each exposes. "
+                           "Use this to check whether a capability lives in an MCP "
+                           "server before calling connect_mcp.",
+            "parameters": {"type": "object", "properties": {},
+                           "required": []}
+        }}
+
+        return [connect_def, list_def]
+
+    def _mcp_tool_defs(self) -> list:
+        """动态组装当前已连接 MCP 服务器的工具定义（OpenAI 格式）。
+
+        每轮现场组装（不缓存），保证 connect_mcp 后 LLM 立即可见新工具。
+        MCPManager 未注入时返回空列表。
+        """
+        if self._mcp_manager is None:
+            return []
+        return self._mcp_manager.assemble_tools()
+
+    def build_agent_tools(self, team_mode: bool = False) -> list:
+        """组装喂给 LLM 的工具集 = 基础（团队/默认）+ 已连接 MCP 工具。
+
+        与 default_agent_tools / main_agent_tools 的差异：这里是**动态方法**，
+        每次调用都把已连接 MCP 服务器的工具合并进去，实现 s19 的"动态工具池"。
+        主循环 agent_loop 每轮调用它，connect_mcp 后下一轮即可看到新工具。
+        """
+        base = self.main_agent_tools if team_mode else self.default_agent_tools
+        mcp_defs = self._mcp_tool_defs()
+        if not mcp_defs:
+            return base
+        return [*base, *mcp_defs]
+
     @property
     def main_agent_tools(self) -> list:
         """团队模式工具集 = 全部工具（含团队工具）+ sub_agent。
@@ -961,9 +1055,22 @@ class ToolRegistry:
     #  统一执行入口
     # ═══════════════════════════════════════════════════════════
 
+    def resolve_handler(self, tool_name: str):
+        """按工具名解析处理器：先查静态 handlers，未命中且为 mcp__* 时查 MCP 管理器。
+
+        返回可调用对象或 None（未找到）。MCP 工具是动态发现的，不预先注册进静态
+        handlers，故通过本方法在运行时委托给对应 MCP 客户端。
+        """
+        handler = self.handlers.get(tool_name)
+        if handler is not None:
+            return handler
+        if tool_name.startswith("mcp__") and self._mcp_manager is not None:
+            return self._mcp_manager.assemble_handlers().get(tool_name)
+        return None
+
     def execute(self, tool_name: str, **tool_args) -> str:
         """按工具名执行一次工具调用；未知工具返回错误字符串。"""
-        handler = self.handlers.get(tool_name)
+        handler = self.resolve_handler(tool_name)
         if handler is None:
             return f"Error: Unknown tool {tool_name}"
         return handler(**tool_args)

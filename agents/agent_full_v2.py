@@ -28,6 +28,7 @@ from teammate_manager import TeammateManager
 from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR, WORKTREE_DIR
 from tools import ToolRegistry
 from worktree import WorktreeManager
+from mcp import MCPManager
 from skills import SkillLoader
 from llm_manage import LLMClient
 from system_prompt import SystemPromptBuilder
@@ -97,6 +98,12 @@ class Agent:
         # worktree 管理器（s18）：挂到本实例 tools 的 holder 上（实例级）
         self.worktree_manager = WorktreeManager(WORKTREE_DIR)
         self.tools.set_worktree_manager(self.worktree_manager)
+
+        # MCP 管理器（s19）：挂到本实例 tools 的 holder 上（实例级）
+        self.mcp_manager = MCPManager()
+        self.tools.set_mcp_manager(self.mcp_manager)
+        # 启动即自动加载已配置的 MCP 服务器，使其工具首轮即可用（无需模型手动 connect）
+        self.mcp_manager.connect_all()
 
         # 团队模式标志（粘性）：默认 False（子智能体分发模式）；
         # 由 CLI 的 /teams 置 True、/subagent 置 False，决定 agent_loop 喂哪套工具集。
@@ -270,7 +277,7 @@ class Agent:
         """
         if tool_name == "sub_agent":
             return lambda: self._run_subagent(tool_args)
-        elif tool_name in self.tools.handlers:
+        elif self.tools.resolve_handler(tool_name) is not None:
             return lambda: self.tools.execute(tool_name, **tool_args)
         else:
             return lambda: f"Error: Unknown tool {tool_name}"
@@ -395,7 +402,7 @@ class Agent:
                         model=mdl,
                         messages=self.history_messages,
                         max_tokens=mt,
-                        tools=self.tools.main_agent_tools if self.team_mode else self.tools.default_agent_tools,
+                        tools=self.tools.build_agent_tools(team_mode=self.team_mode),
                         tool_choice="auto",  # 工具选择，值域 none、auto、required，默认 auto
                         parallel_tool_calls=True,  # 是否并行执行工具调用，默认 False
                         stream=False,  # 是否流式输出，默认 False

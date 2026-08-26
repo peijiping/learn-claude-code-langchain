@@ -89,6 +89,9 @@ class SystemPromptBuilder:
             f"- {t['function']['name']}（{t['function']['description'].splitlines()[0]}）"
             for t in self.tools.default_agent_tools
         )
+        # MCP 属"动态工具池"：不用写进固定的 system prompt（statement 在会话初始化即固定）。
+        # 连接成功的 mcp__{server}__{tool} 由 build_agent_tools() 每轮动态下发给模型，
+        # 模型据此即知有哪些外部工具可用并调用。此处仅给一条固定用法指引。
         return f"""# 工具与并发机制
 可用工具：
 {tool_lines}
