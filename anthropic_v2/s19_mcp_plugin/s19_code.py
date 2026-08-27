@@ -6,13 +6,13 @@ Run:  python s19_mcp_plugin/code.py
 Need: pip install anthropic python-dotenv + .env with ANTHROPIC_API_KEY
 
 Changes from s18:
-  - MCPClient class: discovers tools, calls tools via mock handler
-  - normalize_mcp_name: normalize tool/server names
-  - assemble_tool_pool: assembles builtin + MCP tools into one pool
-  - connect_mcp: connect to an MCP server, discover tools
-  - Tool naming: mcp__{server}__{tool} with normalization
-  - MCP tools have readOnly/destructive annotations
-  - agent_loop uses dynamic tool pool (builtin + MCP), no prompt cache
+  - MCPClient class: discovers tools, calls tools via mock handler  # MCP 客户端：发现并调用 MCP 工具（mock 实现）
+  - normalize_mcp_name: normalize tool/server names                  # 规范化工具/服务器名（非法字符→下划线）
+  - assemble_tool_pool: assembles builtin + MCP tools into one pool # 把内置 + MCP 工具组装成单一工具池
+  - connect_mcp: connect to an MCP server, discover tools           # 连接 MCP 服务器并发现其工具
+  - Tool naming: mcp__{server}__{tool} with normalization           # 工具命名：带命名空间前缀 mcp__{server}__{tool}
+  - MCP tools have readOnly/destructive annotations                 # MCP 工具带 readOnly/destructive 注解（提示破坏性）
+  - agent_loop uses dynamic tool pool (builtin + MCP), no prompt cache  # agent_loop 使用动态工具池（内置+MCP），免提示词缓存
   - Teammate tools: complete_task, worktree cwd (from s17/s18 fixes)
 
 ASCII flow:
@@ -264,6 +264,7 @@ def assemble_system_prompt(context: dict) -> str:
                 PROMPT_SECTIONS["workspace"]]
     if context.get("memories"):
         sections.append(f"Relevant memories:\n{context['memories']}")
+    # 若有已连接的 MCP 服务器，追加到系统提示中，告知模型当前可用的外部工具
     mcp_names = list(mcp_clients.keys())
     if mcp_names:
         sections.append(f"Connected MCP servers: {', '.join(mcp_names)}")
@@ -655,22 +656,24 @@ def run_review_plan(request_id: str, approve: bool,
     return f"Plan {'approved' if approve else 'rejected'}"
 
 
-# ── MCP System (s19 new) ──
+# ── MCP 系统（s19 新增）──
 
 class MCPClient:
-    """Discovers and calls tools on an MCP server (mock for teaching)."""
+    """MCP 客户端：用于发现并调用某个 MCP 服务器上的工具（教学用 mock 实现）。"""
 
     def __init__(self, name: str):
-        self.name = name
-        self.tools: list[dict] = []
-        self._handlers: dict[str, callable] = {}
+        self.name = name          # MCP 服务器名称（如 "docs"/"deploy"）
+        self.tools: list[dict] = []              # 该服务器暴露的工具定义列表
+        self._handlers: dict[str, callable] = {} # 工具名 → 实际处理函数的映射
 
     def register(self, tool_defs: list[dict],
                  handlers: dict[str, callable]):
+        """注册该服务器的工具定义与对应的处理函数。"""
         self.tools = tool_defs
         self._handlers = handlers
 
     def call_tool(self, tool_name: str, args: dict) -> str:
+        """按工具名调用处理函数（异常统一兜底，返回错误字符串）。"""
         handler = self._handlers.get(tool_name)
         if not handler:
             return f"MCP error: unknown tool '{tool_name}'"
@@ -680,17 +683,18 @@ class MCPClient:
             return f"MCP error: {e}"
 
 
-mcp_clients: dict[str, MCPClient] = {}
+mcp_clients: dict[str, MCPClient] = {}  # 已连接的 MCP 服务器集合（服务器名 → 客户端）
 
-_DISALLOWED_CHARS = re.compile(r'[^a-zA-Z0-9_-]')
+_DISALLOWED_CHARS = re.compile(r'[^a-zA-Z0-9_-]')  # 用于名称规范化：非法字符匹配正则
 
 
 def normalize_mcp_name(name: str) -> str:
-    """Replace non [a-zA-Z0-9_-] with underscore."""
+    """将名称中所有 [a-zA-Z0-9_-] 之外的字符替换为下划线，保证工具名合法唯一。"""
     return _DISALLOWED_CHARS.sub('_', name)
 
 
 def _mock_server_docs():
+    """构造名为 'docs' 的 mock MCP 服务器（只读型文档工具）。"""
     client = MCPClient("docs")
     client.register(
         tool_defs=[
@@ -710,6 +714,7 @@ def _mock_server_docs():
 
 
 def _mock_server_deploy():
+    """构造名为 'deploy' 的 mock MCP 服务器（含破坏性工具 trigger，真实系统中需要二次审批）。"""
     client = MCPClient("deploy")
     client.register(
         tool_defs=[
@@ -730,6 +735,7 @@ def _mock_server_deploy():
     return client
 
 
+# 可连接的 mock MCP 服务器注册表（服务器名 → 工厂函数）
 MOCK_SERVERS = {
     "docs": _mock_server_docs,
     "deploy": _mock_server_deploy,
@@ -737,14 +743,15 @@ MOCK_SERVERS = {
 
 
 def connect_mcp(name: str) -> str:
-    if name in mcp_clients:
+    """连接一个 MCP 服务器：校验是否已连接、是否已知，随后实例化并发现其工具。"""
+    if name in mcp_clients:  # 已连接则直接返回提示
         return f"MCP server '{name}' already connected"
     factory = MOCK_SERVERS.get(name)
-    if not factory:
+    if not factory:  # 未知名服务器：列出可选列表
         available = ", ".join(MOCK_SERVERS.keys())
         return f"Unknown server '{name}'. Available: {available}"
-    mcp_client = factory()
-    mcp_clients[name] = mcp_client
+    mcp_client = factory()          # 通过工厂创建 MCP 客户端
+    mcp_clients[name] = mcp_client  # 登记到已连接集合
     tool_names = [t["name"] for t in mcp_client.tools]
     print(f"  \033[31m[mcp] connected: {name} → {tool_names}\033[0m")
     return (f"Connected to MCP server '{name}'. "
@@ -752,19 +759,26 @@ def connect_mcp(name: str) -> str:
 
 
 def assemble_tool_pool() -> tuple[list[dict], dict]:
-    """Assemble builtin tools + all MCP tools into one pool."""
-    tools = list(BUILTIN_TOOLS)
-    handlers = dict(BUILTIN_HANDLERS)
-    for server_name, mcp_client in mcp_clients.items():
+    """组装工具池：把内置工具 + 所有已连接 MCP 服务器的工具合并成一份。
+
+    返回 (tools, handlers)：
+      - tools 为喂给模型的工具定义列表
+      - handlers 为工具名 → 处理函数的映射
+    其中 MCP 工具用 "mcp__{server}__{tool}" 命名，避免与内置工具重名。
+    """
+    tools = list(BUILTIN_TOOLS)              # 先拷贝内置工具定义
+    handlers = dict(BUILTIN_HANDLERS)        # 再拷贝内置工具处理函数
+    for server_name, mcp_client in mcp_clients.items():  # 遍历每个已连接的服务器
         safe_server = normalize_mcp_name(server_name)
-        for tool_def in mcp_client.tools:
+        for tool_def in mcp_client.tools:    # 遍历该服务器的每个工具
             safe_tool = normalize_mcp_name(tool_def["name"])
-            prefixed = f"mcp__{safe_server}__{safe_tool}"
+            prefixed = f"mcp__{safe_server}__{safe_tool}"  # 加前缀避免重名
             tools.append({
                 "name": prefixed,
                 "description": tool_def.get("description", ""),
                 "input_schema": tool_def.get("inputSchema", {}),
             })
+            # 用闭包绑定当前客户端与工具名，委托给该客户端的 call_tool
             handlers[prefixed] = (
                 lambda *, c=mcp_client, t=tool_def["name"], **kw: c.call_tool(t, kw))
     return tools, handlers
@@ -831,6 +845,7 @@ def run_check_inbox() -> str:
     return "\n".join(lines)
 
 def run_connect_mcp(name: str) -> str:
+    # 将 connect_mcp 工具暴露给模型，内部委托给真正的连接函数
     return connect_mcp(name)
 
 
@@ -925,7 +940,7 @@ BUILTIN_TOOLS = [
      "description": "Connect to an MCP server (docs, deploy) and discover tools.",
      "input_schema": {"type": "object",
                       "properties": {"name": {"type": "string"}},
-                      "required": ["name"]}},
+                      "required": ["name"]}},  # MCP 连接工具：指定服务器名后动态发现其工具
 ]
 
 BUILTIN_HANDLERS = {
@@ -988,9 +1003,11 @@ def agent_loop(messages: list, context: dict):
                             "tool_use_id": block.id, "content": output})
         messages.append({"role": "user", "content": results})
 
+        # 若本轮调用了 connect_mcp（即模型连上了新的 MCP 服务器），
+        # 需要重新组装工具池、刷新上下文和系统提示，让模型能立刻使用新发现的 MCP 工具
         if any(b.name == "connect_mcp" for b in response.content
                if b.type == "tool_use"):
-            tools, handlers = assemble_tool_pool()
+            tools, handlers = assemble_tool_pool()  # 重新组装（含新 MCP 工具）的工具池
             context = update_context(context, messages)
             system = assemble_system_prompt(context)
 
