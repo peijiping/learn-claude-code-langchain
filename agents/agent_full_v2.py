@@ -25,10 +25,10 @@ from session_manage import SessionManager
 from subagent import SubAgent
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
-from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR, WORKTREE_DIR
+from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR, WORKTREE_DIR, MCP_CONFIG
 from tools import ToolRegistry
 from worktree import WorktreeManager
-from mcp import MCPManager
+from mcp_manager import MCPManager
 from skills import SkillLoader
 from llm_manage import LLMClient
 from system_prompt import SystemPromptBuilder
@@ -100,8 +100,11 @@ class Agent:
         self.tools.set_worktree_manager(self.worktree_manager)
 
         # MCP 管理器（s19）：挂到本实例 tools 的 holder 上（实例级）
-        self.mcp_manager = MCPManager()
+        # 真实 MCP：按 WorkSpace/HomeDir/mcp/mcp_servers.json 配置加载，每轮热加载。
+        self.mcp_manager = MCPManager(config_file=MCP_CONFIG)
         self.tools.set_mcp_manager(self.mcp_manager)
+        # 破坏性 MCP 工具门控：注入查询函数，permission_hook 据此二次确认
+        self.hook_system.set_mcp_destructive_lookup(self.mcp_manager.is_destructive)
         # 启动即自动加载已配置的 MCP 服务器，使其工具首轮即可用（无需模型手动 connect）
         self.mcp_manager.connect_all()
 

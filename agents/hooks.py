@@ -42,6 +42,7 @@ s04 将其重构为钩子,带来以下好处:
 """
 
 import json
+import os
 
 from paths import WORKDIR
 
@@ -99,6 +100,12 @@ class HookSystem:
         # 策略列表复制为实例属性,允许不同实例拥有不同策略(测试/多租户场景)。
         self.deny_list: list[str] = list(self.DEFAULT_DENY_LIST)
         self.destructive: list[str] = list(self.DEFAULT_DESTRUCTIVE)
+        # MCP 破坏性工具查询回调（由外部注入 MCPManager.is_destructive，s19 真实 MCP）
+        self.mcp_destructive_lookup = None
+
+    def set_mcp_destructive_lookup(self, fn) -> None:
+        """注入 MCP 破坏性工具查询函数：接收 mcp__{server}__{tool} 全名，返回 bool。"""
+        self.mcp_destructive_lookup = fn
 
     # ── 注册与触发 ────────────────────────────────────────────────────────
     def register(self, event: str, callback):
@@ -196,6 +203,21 @@ class HookSystem:
             path = tool_args.get("path", "")
             if not (WORKDIR / path).resolve().is_relative_to(WORKDIR):
                 print(f"\n\033[2;95m⚠  Writing outside workspace\033[0m")
+                print(f"\033[2;95m   Tool: {tool_name}({tool_args})\033[0m")
+                choice = input("   Allow? [y/N] ").strip().lower()
+                if choice not in ("y", "yes"):
+                    return "Permission denied by user"
+
+        # ── 规则 3:MCP 破坏性工具 (destructiveHint) 二次确认 ─────────────
+        # 与 bash 软危险审批同机制、同 UX;MCP_ALLOW_DESTRUCTIVE=true 时直接放行,
+        # silent 模式( cron/非交互 )直接拒绝,避免 input() 挂死。
+        if tool_name.startswith("mcp__") and self.mcp_destructive_lookup is not None:
+            if self.mcp_destructive_lookup(tool_name):
+                if os.environ.get("MCP_ALLOW_DESTRUCTIVE", "false").lower() == "true":
+                    return None  # 显式放行
+                if self.silent:
+                    return "Permission denied (destructive MCP tool)"
+                print(f"\n\033[2;95m⚠  Potentially destructive MCP tool\033[0m")
                 print(f"\033[2;95m   Tool: {tool_name}({tool_args})\033[0m")
                 choice = input("   Allow? [y/N] ").strip().lower()
                 if choice not in ("y", "yes"):

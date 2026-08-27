@@ -25,6 +25,11 @@ SKILLS_DIR = HOME_DIR / "skills"
 # worktree 目录（git worktree 实验分支挂载点）
 WORKTREE_DIR = HOME_DIR / "worktrees"
 
+# MCP 配置目录（真实 MCP：JSON 配置 + 本地示例 server 同目录）
+MCP_DIR = HOME_DIR / "mcp"
+# MCP 服务器配置文件（mcpServers 格式，多服务器）
+MCP_CONFIG = MCP_DIR / "mcp_servers.json"
+
 # 工作目录（所有工具操作的沙盒根）
 WORKDIR = ROOT_DIR / "WorkSpace/task1"
 
@@ -68,6 +73,7 @@ def ensure_dirs() -> None:
     TODO_DIR.mkdir(parents=True, exist_ok=True)
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
     DURABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MCP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def todo_file_for_session(session_num: int) -> Path:

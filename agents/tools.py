@@ -952,9 +952,10 @@ class ToolRegistry:
         connect_def = {"type": "function", "function": {
             "name": "connect_mcp",
             "description": (
-                "Connect to an MCP server and discover its tools. After connecting, the "
-                "discovered tools become available as mcp__{server}__{tool} in subsequent "
-                "rounds (dynamic tool pool). "
+                "Reconnect a configured MCP server that is currently disconnected or "
+                "failed to connect (configured servers are auto-loaded at startup). "
+                "After connecting, its tools become available as mcp__{server}__{tool} "
+                "in subsequent rounds (dynamic tool pool). "
                 "Choose the server whose exposed capability matches what you need.\n"
                 "Available servers:" + ("\n" + catalog_txt if catalog_txt else " none")
             ),
