@@ -25,8 +25,8 @@
 
 | 代码位置 | 性质 | 技术栈 | 角色 |
 |----------|------|--------|------|
-| [`agents/anthropic/`](./agents/anthropic) | ✅ 已学完的 **v1 教程**（原样保留） | 原生 Anthropic SDK | 学习材料，只读不改 |
-| [`agents/anthropic_v2/`](./agents/anthropic_v2) | 🚧 进行中的 **v2 教程**（原样保留） | 原生 Anthropic SDK | 学习材料，只读不改 |
+| [`anthropic/`](./anthropic) | ✅ 已学完的 **v1 教程**（原样保留） | 原生 Anthropic SDK | 学习材料，只读不改 |
+| [`anthropic_v2/`](./anthropic_v2) | ✅ s01–s19 已学完的 **v2 教程**（原样保留，s20 待学） | 原生 Anthropic SDK | 学习材料，只读不改 |
 | [`agents/agent_full_v2.py`](./agents/agent_full_v2.py) + `agents/*.py` | 🛠️ **我自己用 OpenAI SDK 重写的 v2 智能体** | OpenAI SDK | 自己造的，**这是主入口** |
 
 **原教程的代码全是原生 Anthropic SDK 写的**，没碰 langchain。我自己的那一份起初按 v2 设计、用 langchain 翻译实现，后来为了更深入理解底层交互，**去掉了 langchain 全部依赖，改用原生 OpenAI SDK 直接调用**。现在 `agents/` 根目录用的是 bare `openai` 库——`client.chat.completions.create()` + `response.choices[0].message.tool_calls`，没有任何 langchain 抽象层。
@@ -50,6 +50,9 @@
 - `error_recovery.py` —— 错误恢复状态机（429/503 退避 / max_tokens 升级 / prompt 超长压缩 / 兜底 abort）
 - `hooks.py` —— Hook 系统（UserPromptSubmit / PreToolUse / PostToolUse / Stop 四类事件）
 - `check_permission.py` —— 权限三闸门（硬拒绝 / 规则匹配 / 用户确认）
+- `paths.py` —— 所有路径常量的单一事实来源（WORKDIR / TODO_DIR / TEAM_DIR / MCP_CONFIG 等）
+- `worktree.py` —— Worktree 目录隔离（s18）
+- `mcp_manager.py` —— **真实 MCP 客户端**（s19，基于官方 `mcp` SDK 替代 mock 版）
 - `message_bus.py` —— 队友间 JSONL 邮箱
 - `teammate_manager.py` —— 持久队友 + idle 自循环
 - `history/v1`、`history/v2` —— 之前写过的 v1 / v2 早期版本归档
@@ -94,7 +97,7 @@ def agent_loop(messages):
 
 ### ✅ v1（已完成） —— 12 节课，一条朴素的主线
 
-代码在 [`agents/anthropic/`](./agents/anthropic) 目录。
+代码在 [`anthropic/`](./anthropic) 目录。
 
 | 课程 | 主题 | 一句话心法 |
 |------|------|------------|
@@ -113,11 +116,11 @@ def agent_loop(messages):
 
 最后由 `s_full.py` 把 s01–s11 全部串起来，得到一个完整可跑的 v1 Capstone。
 
-中文学习笔记放在 `agents/anthropic/docs/zh/`。
+中文学习笔记放在 `anthropic/docs/zh/`。
 
-### 🚧 v2（s01–s14 已学完，s15+ 待学） —— 20 节课，更完整的 Harness
+### ✅ v2（s01–s19 已学完，s20 待学） —— 20 节课，更完整的 Harness
 
-代码在 [`agents/anthropic_v2/`](./agents/anthropic_v2) 目录。
+代码在 [`anthropic_v2/`](./anthropic_v2) 目录。
 
 v2 把 v1 的 12 节课扩展到 20 节，引入了 v1 没单拆出来的关键能力 —— **权限系统、Hooks、记忆子系统、错误恢复、Cron 调度、MCP 插件**，并按"动手 → 复杂任务 → 记忆恢复 → 长任务 → 协作 → 扩展装配"的链路重排了顺序，更贴近真实工程。
 
@@ -127,10 +130,12 @@ v2 把 v1 的 12 节课扩展到 20 节，引入了 v1 没单拆出来的关键�
 | **Stage 2 · 处理复杂任务** | s05 TodoWrite / s06 Subagent / s08 Context Compact | 计划 + 子任务 + 上下文压缩 | ✅ 已学完 |
 | **Stage 3 · 记忆与恢复** | **s09 Memory** / **s10 System Prompt** / **s11 Error Recovery** | 记忆 + 提示词装配 + 错误恢复 | ✅ 已学完 |
 
-> **注意**：s09 教程代码是"事后分析"模式（每轮结束额外调 LLM 抽取记忆），我自己的实现改成了 **Tool 驱动模式** — 模型通过 `write_memory`/`forget_memory` 工具即时写入，更贴合真实 CC 的行为。详见 [`s09_code_cc.py`](agents/anthropic_v2/s09_memory/s09_code_cc.py)。
+> **注意**：s09 教程代码是"事后分析"模式（每轮结束额外调 LLM 抽取记忆），我自己的实现改成了 **Tool 驱动模式** — 模型通过 `write_memory`/`forget_memory` 工具即时写入，更贴合真实 CC 的行为。详见 [`s09_code_cc.py`](anthropic_v2/s09_memory/s09_code_cc.py)。
 | **Stage 4 · 跑长任务** | s12 Task System / s13 Background Tasks / **s14 Cron Scheduler** | 任务系统 + 后台 + 定时 | ✅ 已学完 |
-| **Stage 5 · 多人协作** | s15 Agent Teams / s16 Team Protocols / s17 Autonomous Agents / s18 Worktree Isolation | 团队 + 协议 + 自组织 + 隔离 | ⏳ 待学 |
-| **Stage 6 · 扩展装配** | s07 Skill Loading / **s19 MCP Plugin** / **s20 Comprehensive** | 技能 + MCP + 集成 | ⏳ 待学 |
+| **Stage 5 · 多人协作** | s15 Agent Teams / s16 Team Protocols / s17 Autonomous Agents / s18 Worktree Isolation | 团队 + 协议 + 自组织 + 隔离 | ✅ 已学完 |
+| **Stage 6 · 扩展装配** | s07 Skill Loading / **s19 MCP Plugin** / s20 Comprehensive | 技能 + MCP + 集成 | ✅ s19 完成 · s20 待学 |
+
+> **s19 说明**：教程代码是 mock handler 模拟外部 server，我的实现换成**真实 MCP 客户端**——基于官方 `mcp` SDK，单开连接池、动态工具池、真实 LLM 全链路调用验证通过（详见下方"已落地的核心机制 → 18"）；并补充了 `${VAR}` 密钥插值（不落盘）、断线自愈、Resources 只读工具、工具标注 + 破坏性审批门控、远程服务器鉴权。对标主流智能体（Claude Code）MCP，当前仍缺：Server 市场 + 一键安装、Prompts 读取、Sampling、流式输出、工具冲突消解。
 
 v2 的特点是每节都是独立文件夹：`README.md`（中文）+ `README.en.md`（英文）+ `code.py`（可运行）+ `images/`（SVG 图）。
 
@@ -160,28 +165,32 @@ learn-claude-code-main/
 │   ├── error_recovery.py         # 错误恢复状态机（s11）
 │   ├── hooks.py                  # Hook 系统（s04）
 │   ├── check_permission.py       # 权限三闸门（s03，尚未接入主循环）
+│   ├── paths.py                  # 所有路径常量单一来源＋ensure_dirs()
+│   ├── worktree.py               # Worktree 隔离（s18）
+│   ├── mcp_manager.py            # 真实 MCP 客户端（s19，官方 mcp SDK）
 │   ├── message_bus.py            # 队友邮箱
-│   ├── teammate_manager.py       # 队友 + idle 循环
-│   ├── history/                  # 早期版本归档（v1 / v2）
-│   │
-│   │  # === 📚 教程原样保留（只读不动）===
-│   ├── anthropic/                # ✅ v1 教程代码：12 节课 + s_full Capstone
-│   │   ├── s01_agent_loop.py
-│   │   ├── s02_tool_use.py
-│   │   ├── ...
-│   │   ├── s12_worktree_task_isolation.py
-│   │   ├── s_full.py              # v1 完整版
-│   │   └── docs/zh/               # v1 中文笔记
-│   │
-│   └── anthropic_v2/             # 🚧 v2 教程代码：20 节课 + Web 平台
-│       ├── s01_agent_loop/        # 每节一个文件夹
-│       ├── s02_tool_use/
-│       ├── ...
-│       ├── s20_comprehensive/     # v2 终点
-│       ├── web/                   # Next.js 学习平台
-│       ├── tests/                 # smoke tests
-│       └── README.md              # v2 教程总入口
+│   └── teammate_manager.py       # 队友 + idle 循环
 │
+├── anthropic/                    # ✅ v1 教程代码：12 节课 + s_full Capstone（只读不动）
+│   ├── s01_agent_loop.py
+│   ├── s02_tool_use.py
+│   ├── ...
+│   ├── s12_worktree_task_isolation.py
+│   ├── s_full.py                  # v1 完整版
+│   └── docs/zh/                   # v1 中文笔记
+│
+├── anthropic_v2/                 # ✅ v2 教程代码：20 节课 + Web 平台（s01–s19 已学，只读不动）
+│   ├── s01_agent_loop/            # 每节一个文件夹
+│   ├── s02_tool_use/
+│   ├── ...
+│   ├── s19_mcp_plugin/            # s19：MCP 外接工具
+│   ├── s20_comprehensive/         # v2 终点（待学）
+│   ├── web/                       # Next.js 学习平台
+│   ├── tests/                     # smoke tests
+│   └── README.md                  # v2 教程总入口
+│
+├── history/                      # 早期版本归档（v1 / v2 旧实现留档）
+├── mcp_servers/                  # 本地 MCP 测试服务器（echo_server.py）
 ├── skills/                        # v1 s05 用的 skill 文件
 ├── tests/                         # v1 模块单元测试
 ├── WorkSpace/                     # 用 agent 跑过的实际任务留档
@@ -212,15 +221,17 @@ learn-claude-code-main/
 10. **会话管理** —— `session_manage.py` 支持新建 / 切换 / 清空 / 持久化 jsonl。
 11. **队友协作** —— `message_bus.py` JSONL 邮箱 + `teammate_manager.py` 持久队友 + idle 循环。
 12. **Reasoning 模型兼容** —— `llm_manage.py` 包装原生 `OpenAI` 客户端，兼容 reasoning 模型，保留 `reasoning_content` 多轮回传。
-13. **记忆系统** —— s09 教程拆分为 Tool 驱动模式：`write_memory`/`forget_memory` 工具由模型自主调用，MEMORY.md 索引常驻 system prompt，零额外 LLM 开销。详见 [`s09_code_cc.py`](agents/anthropic_v2/s09_memory/s09_code_cc.py)。
+13. **记忆系统** —— s09 教程拆分为 Tool 驱动模式：`write_memory`/`forget_memory` 工具由模型自主调用，MEMORY.md 索引常驻 system prompt，零额外 LLM 开销。详见 [`s09_code_cc.py`](anthropic_v2/s09_memory/s09_code_cc.py)。
 14. **System Prompt 组装** —— s10 把硬编码 `SYSTEM` 拆成 section（工具规范 / 记忆索引 / 技能描述 / 工作目录），运行时按状态拼接，并用 `STATIC_BOUNDARY` 标记静态/动态边界以命中 prompt cache。见 [`system_prompt.py`](agents/system_prompt.py)。
 15. **错误恢复** —— s11 状态机封装：429/503 内层指数退避重试、连续 503 切 `FALLBACK_MODEL`、`max_tokens` 截断两阶段恢复（升级到 64K → 续写 prompt）、prompt 超长触发 reactive compact、不可恢复错误 abort。见 [`error_recovery.py`](agents/error_recovery.py)。
 16. **Hooks 系统** —— s04 四类事件（`UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`），`PreToolUse` 回调返回非 None 视为阻断信号。默认 hooks 已注册；权限闸门 `check_permission.py` 接入后将在此拦截危险工具调用。见 [`hooks.py`](agents/hooks.py)。
 17. **Cron 定时调度** —— s14 三层解耦架构（调度线程 → 任务队列 → 队列处理器），通过 `schedule_cron` / `list_crons` / `cancel_cron` 工具由大模型对话创建定时任务。与教程的关键差异见下方 [s14 与教程的差异](#s14-与教程的差异)。见 [`cron_scheduler.py`](agents/cron_scheduler.py)。
+18. **MCP 插件（真实客户端）** —— s19 从 mock 升级为真实 MCP：`mcp_manager.py` 基于官方 `mcp` SDK，`MCPServerSession` 每服务器一个大后台线程跑独立 asyncio 环 + 常驻 `ClientSession`，`MCPManager` 统一管理（配置发现 → 连接 → 动态工具池 → 委托调用 → 热加载）。工具池以 `mcp__{server}__{tool}` 命名空间动态追加、省 token；企业级加固包括 `${VAR}` 密钥插值（不落盘）、断线重连自愈、Resources 只读工具、工具标注（readOnly/destructive/openWorld）与破坏性审批门控、远程 stdio/streamable-http/sse 传输鉴权。名称规范化修复了连字符问题（统一折叠为 `_`）。见 [`mcp_manager.py`](agents/mcp_manager.py)。
 
 **接下来要做的**：
 
-- 跟 v2 教程继续推进：s15-s18 协作链 → **s19 MCP 插件** → s20 综合
+- 跟 v2 教程收尾：**s20 综合**（把 s01–s19 的机制合回一个完整 harness）
+- s19 补齐主流 MCP 能力：Server 市场 + 一键安装、Prompts 读取、Sampling、流式输出、工具冲突消解
 - 把权限闸门 `check_permission.py` 真正接进主循环（目前 `agent_full_v2.py` 顶部导入被注释，三闸门尚未在 `agent_loop` 里启用）
 - 把 subagent / teammate 的事件接进 **Hooks**（PreToolUse / PostToolUse 插桩），便于做轨迹采集
 - 把任务系统迁移到 **State Graph 编排**，验证"图编排"和"while 循环"两种范式都能覆盖同一套机制
@@ -239,15 +250,15 @@ python agents/agent_cli.py
 
 # 3. 看教程代码（只读，对照参考）
 #    v1（已学完，12 节课）
-python agents/anthropic/s01_agent_loop.py
-python agents/anthropic/s_full.py            # v1 完整版
+python anthropic/s01_agent_loop.py
+python anthropic/s_full.py            # v1 完整版
 
 #    v2（进行中，20 节课）
-python agents/anthropic_v2/s01_agent_loop/code.py
-python agents/anthropic_v2/s20_comprehensive/code.py   # v2 教程终点
+python anthropic_v2/s01_agent_loop/code.py
+python anthropic_v2/s20_comprehensive/code.py   # v2 教程终点
 
 # 4. v2 自带的 Web 学习平台
-cd agents/anthropic_v2/web && npm install && npm run dev
+cd anthropic_v2/web && npm install && npm run dev
 # → http://localhost:3000
 ```
 
@@ -267,10 +278,11 @@ cd agents/anthropic_v2/web && npm install && npm run dev
 
 ## 我的学习笔记
 
-- **v1 笔记**：[`agents/anthropic/docs/zh/`](./agents/anthropic/docs/zh)
-- **v2 笔记**：跟代码走，每节的 `sXX_xxx/README.md` 就是当节的中文讲解
+- **v1 笔记**：[`anthropic/docs/zh/`](./anthropic/docs/zh)
+- **v2 笔记**：跟代码走，每节的 `sXX_xxx/README.md` 就是当节的中文讲解（s01–s19 已学完，见 [`anthropic_v2/README.md`](anthropic_v2/README.md)）
 - **自己的 OpenAI SDK 版**：[`agents/agent_full_v2.py`](./agents/agent_full_v2.py) 及其同级模块 —— 教程思路的 OpenAI SDK 重新实现（最初基于 langchain，后全部剥离）
-- **早期版本归档**：[`agents/history/`](./agents/history) —— v1 / v2 旧实现留档
+- **MCP 真实实现笔记**：[`agents/mcp_manager.py`](./agents/mcp_manager.py) —— s19 的 mock → 真实客户端升级（连接池 / 动态工具池 / 热加载 / 鉴权 / 破坏性门控）
+- **早期版本归档**：[`history/`](./history) —— v1 / v2 旧实现留档
 - **实验留档**：[`WorkSpace/`](./WorkSpace) —— 用 agent 跑过的实际任务
 
 ## 踩坑记录
@@ -287,7 +299,7 @@ cd agents/anthropic_v2/web && npm install && npm run dev
 
 ### Todo 与 session 绑定 + 崩溃恢复
 
-相比 v1 教程的 `TodoManager`（`agents/anthropic/s03_todo_write.py` 里的纯内存版），v2 我做了**两处鲁棒性增强**：
+相比 v1 教程的 `TodoManager`（`anthropic/s03_todo_write.py` 里的纯内存版），v2 我做了**两处鲁棒性增强**：
 
 - todo **落盘** —— 写到 `WorkSpace/task1/.todo/session_<N>.todo.json`，`TodoManager.__init__` 立刻 `load()`，进程崩溃后内存里的 todo 仍是上次状态
 - todo **与 session 绑定** —— 不再是全局单文件，而是和 `.chathistory/session_<N>.jsonl` 用同一个 N 串起来，切换 session 时 `set_todo_manager(N)` 重新指向对应文件，不同会话的 todo 完全隔离
