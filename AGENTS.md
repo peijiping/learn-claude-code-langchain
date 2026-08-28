@@ -2,7 +2,7 @@
 
 ## 项目本质
 
-个人学习仓库，从 0 到 1 理解 Coding Agent 的 Harness 构建。沿着 v1 → v2 教程路径，用 **langchain 重写**验证所有设计模式。
+个人学习仓库，从 0 到 1 理解 Coding Agent 的 Harness 构建。沿着 v1 → v2 → v2.1 教程路径，用 **OpenAI SDK 重写**验证所有设计模式（原用 langchain，为更贴近底层逻辑已切换）。
 
 **核心心法**：Agency（感知-推理-行动）来自模型训练，Harness 是让模型在特定领域干活的脚手架。
 
@@ -10,15 +10,16 @@
 
 | 路径 | 性质 | 操作 |
 |------|------|------|
-| `agents/*.py`（根目录） | 🛠️ 我用 langchain 重写的 v2 实现 | **主入口，读写修改** |
+| `agents/*.py`（根目录） | 🛠️ 我用 OpenAI SDK 重写的 v2 实现 | **主入口，读写修改** |
 | `anthropic/` | ✅ v1 教程代码（Anthropic SDK） | 只读不写 |
-| `anthropic_v2/` | 🚧 v2 教程代码（Anthropic SDK） | 只读不写 |
+| `anthropic_v2/` | ✅ v2 教程代码（Anthropic SDK） | 只读不写 |
+| `anthropic_v2.1/` | 🚧 v2.1 教程代码（教程更新版，后续将把 s15-s17 内容更新进 agents/ 实现） | 只读不写 |
 | `history/`、`mcp_servers/` | 早期版本归档 / 本地 MCP 测试服务器 | 只读不写 |
 
 ## 主入口
 
 - `agents/agent_cli.py` — **唯一入口**（`python agents/agent_cli.py`），实例化 `Agent` 驱动 REPL（input 循环 + 斜杠命令 + readline 配置）。
-- `agents/agent_full_v2.py` — 主智能体引擎，`Agent` 类（基于 `ChatOpenAI.bind_tools()`），持有全部依赖与会话状态，支持多实例隔离。**不作为启动入口**（已移除 `__main__`），由 agent_cli.py 导入。
+- `agents/agent_full_v2.py` — 主智能体引擎，`Agent` 类（基于 OpenAI SDK `chat.completions.create()` + function calling），持有全部依赖与会话状态，支持多实例隔离。**不作为启动入口**（已移除 `__main__`），由 agent_cli.py 导入。
 
 为 s14 定时任务（每任务独立会话）与未来 TUI 多会话预留接缝：
 
@@ -44,8 +45,9 @@ agent_loop(messages):
 ## 学习进度
 
 - ✅ v1 12 课已学完
-- 🚧 v2 20 课进行中（已到 MCP 插件接入）
-- ⏳ 待做：Hooks 插桩、LangGraph 迁移
+- ✅ v2 20 课已学完
+- 🚧 v2.1 教程更新版进行中（待把 s15-s17 内容更新进 agents/ 实现）
+
 
 ## 注意事项
 
@@ -68,8 +70,8 @@ agent_loop(messages):
 
 ### 其他
 
-- 别删 `anthropic/` 和 `anthropic_v2/` 下的教程代码——它们是学习对照材料，只读不动。
-- 当我问"看教程"时，去 `anthropic/`（v1）或 `anthropic_v2/`（v2）找对应的课程代码。
+- 别删 `anthropic/`、`anthropic_v2/` 和 `anthropic_v2.1/` 下的教程代码——它们是学习对照材料，只读不动。
+- 当我问"看教程"时，去 `anthropic/`（v1）、`anthropic_v2/`(v2）或 `anthropic_v2.1/`（v2.1）找对应的课程代码。
 - 我自己的实现若有 bug，优先修 `agents/agent_full_v2.py` 及其同级模块。
 - **路径定义统一管理**：所有工作目录相关常量（`WORKDIR`、`TODO_DIR`、`TEAM_DIR`、`INBOX_DIR`、`CHAT_HISTORY_DIR`、`TRANSCRIPT_DIRNAME`、`TOOL_RESULTS_DIRNAME` 等）一律在 `agents/paths.py` 顶部集中定义，其他模块通过 `from paths import ...` 引用，禁止在业务模块内重复声明。
 - **工具统一走 ToolRegistry（实例，无全局单例）**：`agents/tools.py` 的 `ToolRegistry` 类统一管理所有工具（原 `tool_base.py` 已合并删除），由 `Agent`（`agent_full_v2.py`）实例化并持有为 `self.tools`。**不再提供全局单例 `TOOL_REGISTRY`**，多实例各持一份。工具定义用 `self.tools.main_agent_tools`（子智能体用 `self.tools.base_tools`）、处理器用 `self.tools.handlers`、执行用 `self.tools.execute(name, **args)`；基础工具方法（`run_bash` / `run_read` / `run_write` / `run_edit` / `run_glob` / `safe_path`）与 todo/background holder（`set_todo_manager` / `get_todo_manager` / `set_background_manager`）均通过该实例调用。其他模块（如 `teammate_manager` / `system_prompt`）需要工具时，由调用方注入 `ToolRegistry` 实例（构造参数），禁止再 import 被删除的 `tool_base` 或全局单例。

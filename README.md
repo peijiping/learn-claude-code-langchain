@@ -1,6 +1,6 @@
 # 我的 Claude Code Agent 学习仓库
 
-> 从 0 到 1 学习 Claude Code Agent Harness 工程，沿着 **v1 → v2** 演进路径，最终目标：**自己动手做出一套完整的智能体**。
+> 从 0 到 1 学习 Claude Code Agent Harness 工程，沿着 **v1 → v2 → v2.1** 演进路径，最终目标：**自己动手做出一套完整的智能体**。
 
 ---
 
@@ -26,7 +26,8 @@
 | 代码位置 | 性质 | 技术栈 | 角色 |
 |----------|------|--------|------|
 | [`anthropic/`](./anthropic) | ✅ 已学完的 **v1 教程**（原样保留） | 原生 Anthropic SDK | 学习材料，只读不改 |
-| [`anthropic_v2/`](./anthropic_v2) | ✅ s01–s19 已学完的 **v2 教程**（原样保留，s20 待学） | 原生 Anthropic SDK | 学习材料，只读不改 |
+| [`anthropic_v2/`](./anthropic_v2) | ✅ 已学完的 **v2 教程**（20 节课，原样保留） | 原生 Anthropic SDK | 学习材料，只读不改 |
+| [`anthropic_v2.1/`](./anthropic_v2.1) | 🚧 **v2.1 教程更新版**（进行中，后续将把 s15–s17 内容更新进 `agents/` 实现） | 原生 Anthropic SDK | 学习材料，只读不改 |
 | [`agents/agent_full_v2.py`](./agents/agent_full_v2.py) + `agents/*.py` | 🛠️ **我自己用 OpenAI SDK 重写的 v2 智能体** | OpenAI SDK | 自己造的，**这是主入口** |
 
 **原教程的代码全是原生 Anthropic SDK 写的**，没碰 langchain。我自己的那一份起初按 v2 设计、用 langchain 翻译实现，后来为了更深入理解底层交互，**去掉了 langchain 全部依赖，改用原生 OpenAI SDK 直接调用**。现在 `agents/` 根目录用的是 bare `openai` 库——`client.chat.completions.create()` + `response.choices[0].message.tool_calls`，没有任何 langchain 抽象层。
@@ -118,7 +119,7 @@ def agent_loop(messages):
 
 中文学习笔记放在 `anthropic/docs/zh/`。
 
-### ✅ v2（s01–s19 已学完，s20 待学） —— 20 节课，更完整的 Harness
+### ✅ v2（已学完） —— 20 节课，更完整的 Harness
 
 代码在 [`anthropic_v2/`](./anthropic_v2) 目录。
 
@@ -133,11 +134,17 @@ v2 把 v1 的 12 节课扩展到 20 节，引入了 v1 没单拆出来的关键�
 > **注意**：s09 教程代码是"事后分析"模式（每轮结束额外调 LLM 抽取记忆），我自己的实现改成了 **Tool 驱动模式** — 模型通过 `write_memory`/`forget_memory` 工具即时写入，更贴合真实 CC 的行为。详见 [`s09_code_cc.py`](anthropic_v2/s09_memory/s09_code_cc.py)。
 | **Stage 4 · 跑长任务** | s12 Task System / s13 Background Tasks / **s14 Cron Scheduler** | 任务系统 + 后台 + 定时 | ✅ 已学完 |
 | **Stage 5 · 多人协作** | s15 Agent Teams / s16 Team Protocols / s17 Autonomous Agents / s18 Worktree Isolation | 团队 + 协议 + 自组织 + 隔离 | ✅ 已学完 |
-| **Stage 6 · 扩展装配** | s07 Skill Loading / **s19 MCP Plugin** / s20 Comprehensive | 技能 + MCP + 集成 | ✅ s19 完成 · s20 待学 |
+| **Stage 6 · 扩展装配** | s07 Skill Loading / **s19 MCP Plugin** / s20 Comprehensive | 技能 + MCP + 集成 | ✅ 已学完 |
 
 > **s19 说明**：教程代码是 mock handler 模拟外部 server，我的实现换成**真实 MCP 客户端**——基于官方 `mcp` SDK，单开连接池、动态工具池、真实 LLM 全链路调用验证通过（详见下方"已落地的核心机制 → 18"）；并补充了 `${VAR}` 密钥插值（不落盘）、断线自愈、Resources 只读工具、工具标注 + 破坏性审批门控、远程服务器鉴权。对标主流智能体（Claude Code）MCP，当前仍缺：Server 市场 + 一键安装、Prompts 读取、Sampling、流式输出、工具冲突消解。
 
 v2 的特点是每节都是独立文件夹：`README.md`（中文）+ `README.en.md`（英文）+ `code.py`（可运行）+ `images/`（SVG 图）。
+
+### 🚧 v2.1（进行中） —— 教程更新版
+
+代码在 [`anthropic_v2.1/`](./anthropic_v2.1) 目录。教程作者更新了 v2 课程，从 s01 重排到 s17（s15 Integrated Harness / s16 Workflow Runtime / s17 Goal Loop 为新增内容）。
+
+计划：把 v2.1 的 **s15–s17** 新增课程内容更新进 [`agents/`](./agents) 自己的实现里，其余各节与已有实现对照查漏。
 
 ---
 
@@ -179,15 +186,23 @@ learn-claude-code-main/
 │   ├── s_full.py                  # v1 完整版
 │   └── docs/zh/                   # v1 中文笔记
 │
-├── anthropic_v2/                 # ✅ v2 教程代码：20 节课 + Web 平台（s01–s19 已学，只读不动）
+├── anthropic_v2/                 # ✅ v2 教程代码：20 节课 + Web 平台（已学完，只读不动）
 │   ├── s01_agent_loop/            # 每节一个文件夹
 │   ├── s02_tool_use/
 │   ├── ...
 │   ├── s19_mcp_plugin/            # s19：MCP 外接工具
-│   ├── s20_comprehensive/         # v2 终点（待学）
+│   ├── s20_comprehensive/         # v2 终点（综合）
 │   ├── web/                       # Next.js 学习平台
 │   ├── tests/                     # smoke tests
 │   └── README.md                  # v2 教程总入口
+│
+├── anthropic_v2.1/               # 🚧 v2.1 教程更新版：s01–s17（只读不动，s15–s17 待更新进 agents/）
+│   ├── s01_agent_loop/
+│   ├── ...
+│   ├── s15_integrated_harness/    # 新增：集成 Harness
+│   ├── s16_workflow_runtime/      # 新增：Workflow Runtime
+│   ├── s17_goal_loop/             # 新增：Goal Loop
+│   └── README-zh.md
 │
 ├── history/                      # 早期版本归档（v1 / v2 旧实现留档）
 ├── mcp_servers/                  # 本地 MCP 测试服务器（echo_server.py）
@@ -205,7 +220,7 @@ learn-claude-code-main/
 
 ## 学习目标 & 已完成项
 
-**目标**：跟着 v1 → v2 教程，**用 OpenAI SDK 重新实现**一套完整可跑的 Coding Agent（起初基于 langchain，后全部剥离改用原生 SDK），理解 Harness 每一层的底层交互细节。
+**目标**：跟着 v1 → v2 → v2.1 教程，**用 OpenAI SDK 重新实现**一套完整可跑的 Coding Agent（起初基于 langchain，后全部剥离改用原生 SDK），理解 Harness 每一层的底层交互细节。
 
 **已落地的核心机制**（`agents/` 根目录）：
 
@@ -230,7 +245,7 @@ learn-claude-code-main/
 
 **接下来要做的**：
 
-- 跟 v2 教程收尾：**s20 综合**（把 s01–s19 的机制合回一个完整 harness）
+- 把 **v2.1 教程更新版的 s15–s17**（Integrated Harness / Workflow Runtime / Goal Loop）内容更新进 `agents/` 实现
 - s19 补齐主流 MCP 能力：Server 市场 + 一键安装、Prompts 读取、Sampling、流式输出、工具冲突消解
 - 把权限闸门 `check_permission.py` 真正接进主循环（目前 `agent_full_v2.py` 顶部导入被注释，三闸门尚未在 `agent_loop` 里启用）
 - 把 subagent / teammate 的事件接进 **Hooks**（PreToolUse / PostToolUse 插桩），便于做轨迹采集
@@ -253,9 +268,13 @@ python agents/agent_cli.py
 python anthropic/s01_agent_loop.py
 python anthropic/s_full.py            # v1 完整版
 
-#    v2（进行中，20 节课）
+#    v2（已学完，20 节课）
 python anthropic_v2/s01_agent_loop/code.py
 python anthropic_v2/s20_comprehensive/code.py   # v2 教程终点
+
+#    v2.1（教程更新版，进行中）
+python anthropic_v2.1/s01_agent_loop/code.py
+python anthropic_v2.1/s17_goal_loop/code.py     # v2.1 新增课程
 
 # 4. v2 自带的 Web 学习平台
 cd anthropic_v2/web && npm install && npm run dev
@@ -279,7 +298,8 @@ cd anthropic_v2/web && npm install && npm run dev
 ## 我的学习笔记
 
 - **v1 笔记**：[`anthropic/docs/zh/`](./anthropic/docs/zh)
-- **v2 笔记**：跟代码走，每节的 `sXX_xxx/README.md` 就是当节的中文讲解（s01–s19 已学完，见 [`anthropic_v2/README.md`](anthropic_v2/README.md)）
+- **v2 笔记**：跟代码走，每节的 `sXX_xxx/README.md` 就是当节的中文讲解（20 节课已学完，见 [`anthropic_v2/README.md`](anthropic_v2/README.md)）
+- **v2.1 笔记**：跟代码走，见 [`anthropic_v2.1/README-zh.md`](./anthropic_v2.1/README-zh.md)（教程更新版，s15–s17 待更新进自己的实现）
 - **自己的 OpenAI SDK 版**：[`agents/agent_full_v2.py`](./agents/agent_full_v2.py) 及其同级模块 —— 教程思路的 OpenAI SDK 重新实现（最初基于 langchain，后全部剥离）
 - **MCP 真实实现笔记**：[`agents/mcp_manager.py`](./agents/mcp_manager.py) —— s19 的 mock → 真实客户端升级（连接池 / 动态工具池 / 热加载 / 鉴权 / 破坏性门控）
 - **早期版本归档**：[`history/`](./history) —— v1 / v2 旧实现留档
