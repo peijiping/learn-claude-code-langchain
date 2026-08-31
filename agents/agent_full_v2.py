@@ -25,10 +25,11 @@ from session_manage import SessionManager
 from subagent import SubAgent
 from background_manager import BackgroundManager
 from teammate_manager import TeammateManager
-from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR, WORKTREE_DIR, MCP_CONFIG
+from paths import WORKDIR, CHAT_HISTORY_DIR, SKILLS_DIR, TEAM_DIR, WORKTREE_DIR, MCP_CONFIG, WORKFLOW_DIR
 from tools import ToolRegistry
 from worktree import WorktreeManager
 from mcp_manager import MCPManager
+from workflow import WorkflowManager, register_default_workflows
 from skills import SkillLoader
 from llm_manage import LLMClient
 from system_prompt import SystemPromptBuilder
@@ -132,6 +133,12 @@ class Agent:
         self.recovery = ErrorRecovery(
             primary_model=self.model, fallback_model=self.fallback_model
         )
+
+        # 工作流运行时（s16）：复用本实例的 LLM 客户端与模型跑工作流子智能体，
+        # 挂到本实例 tools 的 holder 上（实例级），并注册内置示例工作流
+        self.workflow_manager = WorkflowManager(WORKFLOW_DIR, self.llm_client, self.model)
+        register_default_workflows(self.workflow_manager)
+        self.tools.set_workflow_manager(self.workflow_manager)
 
         # ── 会话状态（由 init_session / new_session / switch_session 填充） ──
         self.session_manager: SessionManager | None = None
@@ -423,7 +430,7 @@ class Agent:
                 self._print(
                     f"\033[2;90m[thinking]\n{truncate_chars(response_msg.reasoning_content, 300)}\n[/thinking]\033[0m"
                 )
-                self._print(f"[本轮回复]\n{response_msg.content}")
+                # self._print(f"[本轮回复]\n{response_msg.content}")
 
             except Exception as e:
                 # 外层异常处理：内层 with_retry 主动 raise 出来的"非临时错误"会到这一层。
