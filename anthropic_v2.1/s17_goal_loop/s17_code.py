@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-s17: Goal Loop
+s17：目标循环（Goal Loop）
 
-The model not calling another tool means that one turn wants to stop. A goal
-adds a session-scoped Stop hook: a separate evaluator reads the conversation,
-decides whether the completion condition holds, and sends unfinished work back
-through the same agent loop.
+模型某轮不再调用任何工具，通常意味着这一轮想停下来。而一个目标（goal）
+则为会话增加一个"会话级 Stop 钩子"：一个独立的评估器阅读整段对话，判断
+完成条件是否已经满足，若未满足，则把未完成的工作通过同一条 Agent 循环
+重新推回去继续处理。
 
-Run:
+运行：
   python s17_goal_loop/code.py
   python s17_goal_loop/code.py "/goal pytest tests exits with code 0"
 
-The live path uses the Anthropic API for both the worker and the evaluator.
-Test doubles belong in tests only.
+实时路径使用 Anthropic API 来驱动工作模型（Worker）与评估器（Evaluator）。
+测试替身只属于 tests，不在本文件内。
 
     +------------+     +--------------+     +-------------+
     | messages[] | --> | Worker model | --> | no tool_use |
@@ -40,10 +40,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# 工作模型（Worker）单次回复允许生成的最大 token 数，防止单轮输出过长
 DEFAULT_MAX_TOKENS = 8000
+# 评估器（Evaluator）最大输出 token 数：它只输出一小段 JSON 判定，无需太多空间
 DEFAULT_EVALUATOR_MAX_TOKENS = 512
+# Stop 钩子连续判"未完成"（block）的次数上限，超过则强制结束，避免死循环
 DEFAULT_STOP_HOOK_BLOCK_CAP = 8
+# 目标（condition）字符串允许的最大长度，防止超长的目标注入打爆上下文
 MAX_GOAL_LENGTH = 4000
+# /goal clear 的同义别名：凡是这些词均视为清除当前目标
 CLEAR_ALIASES = {"clear", "stop", "off", "reset", "none", "cancel"}
 DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]
 DESTRUCTIVE_COMMAND_WORD = re.compile(
@@ -62,31 +67,39 @@ class GoalError(Exception):
 
 @dataclass
 class GoalState:
-    condition: str
-    iterations: int
-    set_at: float
-    tokens_at_start: int
-    last_reason: str | None = None
+    """当前会话中激活的目标状态（可变对象）。
+
+    一次 /goal 设置一个目标后，就用一个 GoalState 记录它的全部运行期状态，
+    供 GoalController 在多次评估之间共享与累计。
+    """
+    condition: str          # 目标的具体文字描述（完成条件的自然语言）
+    iterations: int         # 已执行的评估次数（每次"未完成→回环"累加一次）
+    set_at: float           # 目标设置时的时间戳，用于计算已运行时长
+    tokens_at_start: int    # 设置目标时已消耗的 token 数，用于统计目标期间的花费
+    last_reason: str | None = None  # 最近一次评估返回的说明（未完成/进展等）
 
 
 @dataclass(frozen=True)
 class GoalEvaluation:
-    ok: bool
-    reason: str
-    impossible: bool = False
+    """评估器对"目标是否达成"的一次判定结果（不可变，一次性返回）。"""
+    ok: bool                # True=目标已达成，可结束会话
+    reason: str             # 判定理由，block 回环时会作为反馈注入给 Worker
+    impossible: bool = False  # True=目标根本无法完成（如矛盾、资源缺失），标记失败
 
 
 @dataclass(frozen=True)
 class StopDecision:
-    action: str
-    reason: str = ""
+    """Stop 钩子根据评估结果给出的最终行动指令（驱动外层循环分支）。"""
+    action: str   # allow/block/defer/achieved/failed/error/limit 之一
+    reason: str = ""  # 附带说明，供调用方打印或注入消息
 
 
 @dataclass(frozen=True)
 class SessionResult:
-    text: str
-    status: str
-    reason: str = ""
+    """一轮 submit 的最终返回结果（呈现给用户/调用方）。"""
+    text: str     # 模型最终输出文本（若无则空串）
+    status: str   # 终止状态：normal/max_turns/achieved/failed/error/limit...
+    reason: str = ""  # 附加说明（如目标达成/失败的原因）
 
 
 def _block_type(block: Any) -> str | None:
@@ -177,7 +190,14 @@ def transcript_text(
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
+    """把评估器返回的原始文本解析为合法 JSON，并做严格校验。
+
+    评估器被要求"只输出 JSON"，但大模型常会包裹 markdown 代码块或夹带杂字，
+    这里先剥掉 ``` 包裹，再 json.loads，最后逐字段校验其类型和业务约束，
+    任何一步不满足都抛 GoalError，确保后续逻辑拿到的结构一定可靠。
+    """
     stripped = text.strip()
+    # 去掉以 ``` 开头/结尾包裹的 markdown 围栏
     if stripped.startswith("```"):
         lines = stripped.splitlines()
         if lines and lines[0].startswith("```"):
@@ -191,6 +211,7 @@ def _parse_json_object(text: str) -> dict[str, Any]:
         raise GoalError("goal evaluator returned invalid JSON") from error
     if not isinstance(value, dict):
         raise GoalError("goal evaluator must return a JSON object")
+    # 校验三个字段：ok 必须是 bool，reason 必须是非空字符串，impossible 必须是 bool
     if not isinstance(value.get("ok"), bool):
         raise GoalError("goal evaluator response requires boolean 'ok'")
     if not isinstance(value.get("reason"), str) or not value["reason"].strip():
@@ -198,6 +219,7 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     impossible = value.get("impossible", False)
     if not isinstance(impossible, bool):
         raise GoalError("goal evaluator 'impossible' must be boolean")
+    # ok 与 impossible 语义互斥：达成与"不可能达成"不能同时为真
     if value["ok"] and impossible:
         raise GoalError(
             "goal evaluator cannot return both ok and impossible"
@@ -210,7 +232,11 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 
 
 class PromptGoalEvaluator:
-    """A separate, tool-free model that judges the transcript."""
+    """一个独立的、不挂工具的模型，负责评判对话是否达成目标。
+
+    它的职责与 Worker 完全分离：Worker 埋头干活，Evaluator 只读对话记录后
+    给出 ok / reason / impossible 三段式判定，从而避免"自己干活的人自证完成"。
+    """
 
     def __init__(
         self,
@@ -218,13 +244,14 @@ class PromptGoalEvaluator:
         model: str,
         max_tokens: int = DEFAULT_EVALUATOR_MAX_TOKENS,
     ):
-        self.client = client
-        self.model = model
-        self.max_tokens = max_tokens
+        self.client = client          # Anthropic API 客户端
+        self.model = model            # 评估器所用模型（可配置为更便宜的 Haiku）
+        self.max_tokens = max_tokens  # 评估器输出长度上限
 
     async def evaluate(
         self, condition: str, messages: list[dict[str, Any]]
     ) -> GoalEvaluation:
+        # 评估是阻塞的网络/推理调用，放到线程池里执行以免挡住事件循环
         return await asyncio.to_thread(
             self._evaluate_sync, condition, messages
         )
@@ -232,7 +259,9 @@ class PromptGoalEvaluator:
     def _evaluate_sync(
         self, condition: str, messages: list[dict[str, Any]]
     ) -> GoalEvaluation:
+        # 1) 先把完整对话压缩成纯文本副本（截断过长的消息），作为评判依据
         conversation = transcript_text(messages)
+        # 2) 把目标与对话打包成 JSON，整体作为一段"数据"喂给评估器
         payload = json.dumps(
             {
                 "completion_condition": condition,
@@ -240,6 +269,8 @@ class PromptGoalEvaluator:
             },
             ensure_ascii=False,
         )
+        # 3) 构造提示词：强调两个字段是"数据"而非"指令"，并要求只回 JSON。
+        #    这是安全的提示注入防御——评估器不应听从对话内容里的命令。
         prompt = f"""Input data (JSON):
 {payload}
 
@@ -252,6 +283,7 @@ impossible to true.
 Return only JSON:
 {{"ok": boolean, "reason": string, "impossible": boolean}}"""
 
+        # 4) 调用模型（无 tools），拿到评估结果
         response = self.client.messages.create(
             model=self.model,
             system=(
@@ -262,12 +294,21 @@ Return only JSON:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=self.max_tokens,
         )
+        # 5) 解析并校验 JSON，还原成结构化的 GoalEvaluation
         value = _parse_json_object(_extract_text(response.content))
         return GoalEvaluation(**value)
 
 
 class GoalController:
-    """Session-scoped goal state plus the Stop hook decision."""
+    """目标状态机 + Stop 钩子判定逻辑（goal 功能的核心）。
+
+    职责两件事：
+    1) 维护会话级的目标状态（当前是否激活、存活了多久、评估了多少次）；
+    2) 收到"模型没有调用工具、可能要停"的信号时，调用评估器判断目标是否达成，
+       并据此产出一个 StopDecision（放行 / 回环重做 / 判定结束）。
+
+    它还负责把每次状态变化记录进 events（用于日志/恢复）。
+    """
 
     def __init__(
         self,
@@ -277,17 +318,23 @@ class GoalController:
     ):
         if block_cap < 1:
             raise GoalError("block_cap must be at least 1")
-        self.evaluator = evaluator
-        self.block_cap = block_cap
-        self.events = events if events is not None else []
-        self.active: GoalState | None = None
-        self.last_status: dict[str, Any] | None = None
-        self.consecutive_blocks = 0
+        self.evaluator = evaluator      # 注入的评估器（PromptGoalEvaluator 实例）
+        self.block_cap = block_cap      # 连续 block 上限（见常量说明）
+        self.events = events if events is not None else []  # 状态变更事件日志
+        self.active: GoalState | None = None    # 当前激活的目标；None=无目标
+        self.last_status: dict[str, Any] | None = None  # 最后一次状态事件（兜底展示用）
+        self.consecutive_blocks = 0     # 连续被判"未完成"的次数（用于触发 limit）
 
     def begin_query(self) -> None:
+        """在每一轮查询开始前重置连续 block 计数。
+
+        每次用户/背景结果触发一次完整查询，应视为一轮全新过程，
+        故把连续 block 清零，避免跨查询累计误判。
+        """
         self.consecutive_blocks = 0
 
     def set_goal(self, condition: str, tokens_at_start: int = 0) -> GoalState:
+        """设置新的目标（即 /goal <condition>）。"""
         condition = condition.strip()
         if not condition:
             raise GoalError("goal condition cannot be empty")
@@ -295,6 +342,7 @@ class GoalController:
             raise GoalError(
                 f"goal condition cannot exceed {MAX_GOAL_LENGTH} characters"
             )
+        # 若已有目标，先记录它被"新目标覆盖"，再替换
         if self.active is not None:
             self._record(
                 active=False,
@@ -313,6 +361,7 @@ class GoalController:
         return self.active
 
     def clear(self, reason: str = "cleared") -> str:
+        """清除当前目标（/goal clear 或同义别名）。"""
         if self.active is None:
             return "No goal set"
         condition = self.active.condition
@@ -327,7 +376,9 @@ class GoalController:
         return f"Goal cleared: {condition}"
 
     def status(self, current_tokens: int = 0) -> str:
+        """返回当前目标状态的可读文本（/goal 无参数时调用）。"""
         if self.active is None:
+            # 无激活目标时，若之前是达成/失败则回显结论，否则说明未设置
             if self.last_status and self.last_status.get("met"):
                 return (
                     f"Goal achieved: {self.last_status['condition']}\n"
@@ -339,6 +390,7 @@ class GoalController:
                     f"Reason: {self.last_status.get('reason', '')}"
                 )
             return "No goal set"
+        # 有激活目标：展示存活时长、评估次数、目标期间的花费、最近判定
         elapsed = max(0, int(time.time() - self.active.set_at))
         spent = max(0, current_tokens - self.active.tokens_at_start)
         lines = [
@@ -356,8 +408,21 @@ class GoalController:
         messages: list[dict[str, Any]],
         background_running: bool = False,
     ) -> StopDecision:
+        """Stop 钩子的核心：在"模型一轮结束、无工具再调用"时决定下一步。
+
+        决策分支：
+        - 无目标         → allow（正常放行）
+        - 后台仍在跑     → defer（暂缓，等后台结果）
+        - 评估出错       → error（记录原因，返回错误态）
+        - ok=True        → achieved（目标达成，结束）
+        - impossible     → failed（目标无法完成，判失败）
+        - 连续 block 超限 → limit（强制结束，防死循环）
+        - 其余           → block（未达成，回环让 Worker 继续）
+        """
+        # 没有目标：普通会话，Stop 钩子一律放行
         if self.active is None:
             return StopDecision("allow")
+        # 后台任务还在跑：现在判"达成"不可靠，推迟到后台结果回来再判
         if background_running:
             return StopDecision(
                 "defer", "background work is still running"
@@ -365,10 +430,12 @@ class GoalController:
 
         state = self.active
         try:
+            # 调用评估器，用完整对话判断目标是否达成
             evaluation = await self.evaluator.evaluate(
                 state.condition, messages
             )
         except Exception as error:
+            # 评估器本身报错：记录原因但不判"达成"，返回 error 态
             reason = f"{type(error).__name__}: {error}"
             state.last_reason = reason
             self._record(
@@ -382,6 +449,7 @@ class GoalController:
         state.iterations += 1
         state.last_reason = evaluation.reason
 
+        # 达成：清除目标状态，返回 achieved
         if evaluation.ok:
             self._record(
                 active=False,
@@ -393,6 +461,7 @@ class GoalController:
             self.consecutive_blocks = 0
             return StopDecision("achieved", evaluation.reason)
 
+        # 无法完成：判失败并清空目标
         if evaluation.impossible:
             self._record(
                 active=False,
@@ -404,6 +473,7 @@ class GoalController:
             self.consecutive_blocks = 0
             return StopDecision("failed", evaluation.reason)
 
+        # 未达成：累计连续 block 次数，超额则强制结束，否则返回 block 回环
         self.consecutive_blocks += 1
         self._record(
             active=True,
@@ -429,6 +499,7 @@ class GoalController:
         failed: bool,
         reason: str,
     ) -> None:
+        """把一次目标状态变化写入 events，并同步 last_status 便于兜底展示。"""
         state = self.active
         event = {
             "type": "goal_status",
@@ -452,6 +523,12 @@ class GoalController:
         events: list[dict[str, Any]],
         block_cap: int = DEFAULT_STOP_HOOK_BLOCK_CAP,
     ) -> GoalController:
+        """根据历史事件重建控制器（用于会话恢复/连续性）。
+
+        逆向遍历 events，取最后一个 goal_status 事件：若它是"激活"态，
+        则用一个全新的 GoalState 重新挂起目标（只保留 condition，
+        运行期指标如迭代次数/时长重置，因为恢复时无合理延续），否则保持无目标。
+        """
         controller = cls(
             evaluator=evaluator,
             block_cap=block_cap,
@@ -461,6 +538,7 @@ class GoalController:
             if event.get("type") != "goal_status":
                 continue
             controller.last_status = dict(event)
+            # 最后一条事件是"激活"，则恢复该目标（iterations/耗时归零）
             if event.get("active"):
                 controller.active = GoalState(
                     condition=str(event["condition"]),
@@ -534,7 +612,12 @@ TOOLS = [
 
 
 class AgentSession:
-    """A small real agent loop with a goal Stop hook at the return boundary."""
+    """一个精简的真实 Agent 循环，在"返回值边界"挂上 goal Stop 钩子。
+
+    普通逻辑：模型反复调工具，直到某轮不再调工具、给出文字回答为止；
+    但一旦设置了 goal，这段"要停"的边界就会被 GoalController 截获，
+    由评估器判断目标是否真达成，未达成则以 block 反馈把未竟工作推回循环。
+    """
 
     def __init__(
         self,
@@ -549,18 +632,19 @@ class AgentSession:
             raise GoalError("max_turns must be at least 1")
         self.client = client
         self.model = model
-        self.goal = goal
-        self.workdir = workdir.resolve()
-        self.max_turns = max_turns
+        self.goal = goal            # 目标的 Stop 钩子（GoalController 实例）
+        self.workdir = workdir.resolve()   # 工作目录（工具只能在此范围内操作）
+        self.max_turns = max_turns        # 全局轮数上限（None=不限）
         self.background_running = background_running or (lambda: False)
-        self.messages: list[dict[str, Any]] = []
-        self.total_tokens = 0
-        self.hooks: dict[str, list[Callable[..., Any]]] = {
+        self.messages: list[dict[str, Any]] = []  # 会话消息列表（喂给模型）
+        self.total_tokens = 0               # 累计 token 消耗（用于目标花费统计）
+        self.hooks: dict[str, list[Callable[..., Any]]] = {  # 各事件的钩子回调
             "UserPromptSubmit": [],
             "PreToolUse": [],
             "PostToolUse": [],
             "Stop": [],
         }
+        # 注册内置钩子：权限检查 / 日志 / 大输出提醒 / 上下文提示 / 会话总结
         self.register_hook("PreToolUse", self._permission_hook)
         self.register_hook("PreToolUse", self._log_hook)
         self.register_hook("PostToolUse", self._large_output_hook)
@@ -568,22 +652,33 @@ class AgentSession:
         self.register_hook("Stop", self._summary_hook)
 
     async def submit(self, text: str) -> SessionResult:
+        """接收用户输入，识别 /goal 命令或普通消息，并驱动一轮查询。
+
+        /goal 相关分支：
+        - /goal（无参数）           → 返回当前目标状态
+        - /goal clear|stop|...      → 清除目标
+        - /goal <condition>          → 设置新目标，并把目标文字当作首条用户消息
+        - 其他普通文本               → 正常追加为用户消息
+        """
         stripped = text.strip()
+        # 仅输入 /goal：查询当前目标状态
         if stripped == "/goal":
             return SessionResult(
                 self.goal.status(self.total_tokens), "status"
             )
+        # /goal 带参数：清除（别名）或设置目标
         if stripped.startswith("/goal "):
             argument = stripped[6:].strip()
             if argument.lower() in CLEAR_ALIASES:
                 return SessionResult(self.goal.clear(), "cleared")
+            # 设置目标：记录起始 token，并把目标文字作为首条用户消息喂给模型
             self.goal.set_goal(argument, self.total_tokens)
             self.messages.append({"role": "user", "content": argument})
         else:
             self.messages.append({"role": "user", "content": text})
 
         self.trigger_hooks("UserPromptSubmit", text)
-        self.goal.begin_query()
+        self.goal.begin_query()      # 新一轮查询开始，重置连续 block 计数
         return await self._run_query()
 
     def register_hook(self, event: str, callback: Callable[..., Any]) -> None:
@@ -657,8 +752,11 @@ class AgentSession:
         return None
 
     async def submit_background_result(self, text: str) -> SessionResult:
-        """Resume an active goal after the host receives background output."""
+        """后台任务完成后，把结果注入会话并继续被挂起的 goal 查询。
 
+        GoalController 遇到后台仍在跑时会返回 defer，这里就是"后台结果终于
+        回来"的续接入口：把结果作为用户消息追加，再触发一次查询让评估器重判。
+        """
         if not text.strip():
             raise GoalError("background result cannot be empty")
         self.messages.append(
@@ -667,14 +765,27 @@ class AgentSession:
                 "content": f"[Background task completed]\n{text}",
             }
         )
+        # 若目标已被清除/达成，则无需再评估，直接返回背景结果态
         if self.goal.active is None:
             return SessionResult(text="", status="background_result")
         self.goal.begin_query()
         return await self._run_query()
 
     async def _run_query(self) -> SessionResult:
+        """核心 Agent 循环：调工具直到停止边界，再经 goal 评估决定是否结束。
+
+        每轮循环：
+        1. 检查全局轮数上限，超限则触发 Stop 钩子并返回 max_turns；
+        2. 调用模型（工作模型），累计 token；
+        3. 解析模型的工具调用：逐个经 PreToolUse 权限钩子 → 执行 → PostToolUse；
+           只要还有工具结果，就注入回消息并 continue，继续让模型干活；
+        4. 没有工具调用了（模型给出文字回答）→ 走到 goal 评估的"停止边界"：
+           - block     → 把评估器理由与目标回注入消息，continue 让 Worker 继续；
+           - 其它态     → 触发 Stop 钩子并返回对应的 SessionResult。
+        """
         turns = 0
         while True:
+            # 全局轮数上限：达到即停（目标保持激活，由调用方决定是否续跑）
             if self.max_turns is not None and turns >= self.max_turns:
                 self.trigger_hooks("Stop", self.messages)
                 return SessionResult(
@@ -683,6 +794,7 @@ class AgentSession:
                     reason="global max_turns reached; the goal remains active",
                 )
             turns += 1
+            # 调用工作模型（带全部工具），阻塞调用放入线程池
             response = await asyncio.to_thread(
                 self.client.messages.create,
                 model=self.model,
@@ -700,12 +812,14 @@ class AgentSession:
                 {"role": "assistant", "content": response.content}
             )
 
+            # 提取本轮全部工具调用并逐一执行
             tool_results = []
             for block in response.content:
                 if _block_type(block) != "tool_use":
                     continue
                 name = str(_block_value(block, "name"))
                 arguments = _block_value(block, "input", {}) or {}
+                # PostToolUse 前的权限/拦截钩子：返回非 None 则作为代替输出
                 blocked = self.trigger_hooks("PreToolUse", block)
                 if blocked is not None:
                     output = str(blocked)
@@ -723,18 +837,21 @@ class AgentSession:
                     }
                 )
 
+            # 本轮有工具调用：结果注入消息后继续循环，让模型接着干
             if tool_results:
                 self.messages.append(
                     {"role": "user", "content": tool_results}
                 )
                 continue
 
+            # 没有工具调用（模型的"拟停止"边界）：交给 goal Stop 钩子裁决
             text = _extract_text(response.content)
             decision = await self.goal.evaluate_after_turn(
                 self.messages,
                 background_running=self.background_running(),
             )
             if decision.action == "block":
+                # 目标未达成：把目标与评估器理由回注入消息，推回循环继续工作
                 condition = self.goal.active.condition if self.goal.active else ""
                 self.messages.append(
                     {
@@ -748,6 +865,7 @@ class AgentSession:
                     }
                 )
                 continue
+            # 其它终止态（allow/achieved/failed/defer/error/limit）：触发 Stop 钩子并返回
             self.trigger_hooks("Stop", self.messages)
             return SessionResult(
                 text=text,
