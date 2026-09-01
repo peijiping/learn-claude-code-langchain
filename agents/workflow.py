@@ -46,6 +46,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from streaming_client import streamed_create
+
 # ── 运行时护栏：白名单正则（格式校验，非可调参数，不走 .env） ──────────
 WORKFLOW_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")          # 工作流名：1-64 位 slug
 RUN_ID_RE = re.compile(r"^wf_[A-Za-z0-9][A-Za-z0-9._-]{0,63}_[0-9a-f]{16}$") # runId：wf_<名>_<16位hex>
@@ -225,7 +227,10 @@ class OpenAIAgentRunner:
                 "\n\nReturn only one JSON object matching this schema:\n"
                 + json.dumps(schema, ensure_ascii=True, sort_keys=True)
             )
-        response = self.client.chat.completions.create(
+        # 统一流式入口：工作流子智能体单步无工具，不上 UI（sinks=None），
+        # 仅内部聚合出完整消息；msg 接口兼容 OpenAI message
+        msg, _finish, usage = streamed_create(
+            self.client,
             model=self.model,
             messages=[
                 # 系统提示：专注完成单步，禁止谎称访问了 prompt 之外的文件/结果
@@ -237,7 +242,7 @@ class OpenAIAgentRunner:
             ],
             max_tokens=self.max_tokens,
         )
-        text = (response.choices[0].message.content or "").strip()
+        text = (msg.content or "").strip()
         if schema is None:
             value = text   # 无 schema：原始文本就是结果
         else:
@@ -248,9 +253,8 @@ class OpenAIAgentRunner:
                 # 让 ExecutionState 的 schema 校验触发它那一次重试。
                 value = text
         # 统计输入 + 输出 token（usage 缺失时按 0 算）
-        usage = getattr(response, "usage", None)
-        tokens = int(getattr(usage, "prompt_tokens", 0) or 0) + int(
-            getattr(usage, "completion_tokens", 0) or 0
+        tokens = int(usage.get("prompt_tokens", 0) or 0) + int(
+            usage.get("completion_tokens", 0) or 0
         )
         return RunnerOutput(value, tokens)
 

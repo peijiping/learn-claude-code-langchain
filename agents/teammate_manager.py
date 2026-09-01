@@ -25,6 +25,7 @@ from message_bus import MessageBus
 from llm_manage import LLMClient
 from paths import INBOX_DIR
 from tools import ToolRegistry
+from streaming_client import streamed_create
 
 # ── 可调参数（遵循 .env 约定，见 AGENTS.md）──
 IDLE_POLL_INTERVAL = int(os.environ.get("IDLE_POLL_INTERVAL", "5"))   # 空闲等待的兜底周期（秒），配合 Event 即时唤醒
@@ -358,7 +359,10 @@ class TeammateManager:
                             "content": f"<inbox>{json.dumps(non_protocol)}</inbox>"})
 
                 try:
-                    response = self.llm_client.chat.completions.create(
+                    # 统一流式入口：队友运行在后台线程，不上任何 UI（sinks=None），
+                    # 仅内部聚合出完整消息（接口兼容 OpenAI message）
+                    response_msg, finish_reason, _usage = streamed_create(
+                        self.llm_client,
                         model=self.model,
                         messages=messages,
                         tools=self._teammate_tools(),
@@ -369,7 +373,6 @@ class TeammateManager:
                     print(f"  \033[31m[teammate] {name} LLM error: {e}\033[0m")
                     break
 
-                response_msg = response.choices[0].message
                 tool_calls = response_msg.tool_calls or []
                 # 以 OpenAI 请求格式存 assistant 消息（仅保留 role/content/tool_calls，
                 # 去掉 model_dump() 混入的 refusal/audio/index 等响应字段）
@@ -380,7 +383,7 @@ class TeammateManager:
                     assistant_msg["tool_calls"] = [
                         tc.model_dump() for tc in tool_calls]
                 messages.append(assistant_msg)
-                if response.choices[0].finish_reason != "tool_calls" or not tool_calls:
+                if finish_reason != "tool_calls" or not tool_calls:
                     break  # 非工具调用 → 停止本轮
 
                 for tc in tool_calls:

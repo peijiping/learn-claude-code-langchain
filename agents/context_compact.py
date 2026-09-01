@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from llm_manage import LLMClient
+from streaming_client import streamed_create
 
 from paths import TRANSCRIPT_DIRNAME, TOOL_RESULTS_DIRNAME
 
@@ -408,7 +409,9 @@ class ContextCompact:
         if chosen is not None:
             return chosen(prompt)
         
-        response = self.llm_client.chat.completions.create(
+        # 统一流式入口：摘要调用无 tools，不上 UI（sinks=None），仅内部聚合
+        msg, _finish, _usage = streamed_create(
+            self.llm_client,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=4000,
             temperature=0.5,
@@ -416,7 +419,7 @@ class ContextCompact:
             extra_body={"thinking":{"type":"disabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
         )
 
-        return self.content_to_str(response.choices[0].message.content) or "(empty summary)"
+        return self.content_to_str(msg.content) or "(empty summary)"
 
     def write_transcript(self, messages: list, transcript_dir: Optional[Path] = None) -> Path:
         """把当前完整历史写到 .transcripts/transcript_<timestamp>.jsonl。"""

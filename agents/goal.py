@@ -40,6 +40,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from streaming_client import streamed_create
+
 # 评估器（Evaluator）最大输出 token 数：它只输出一小段 JSON 判定，无需太多空间
 DEFAULT_EVALUATOR_MAX_TOKENS = 512
 # Stop 钩子连续判"未完成"（block）的次数上限，超过则强制结束，避免死循环
@@ -292,10 +294,12 @@ impossible to true.
 Return only JSON:
 {{"ok": boolean, "reason": string, "impossible": boolean}}"""
 
-        # 4) 调用模型（无 tools），拿到评估结果（OpenAI SDK 同步调用）。
+        # 4) 调用模型（无 tools），拿到评估结果。统一流式入口：评估器判定
+        #    只输出一小段 JSON，不上任何 UI（sinks=None），仅内部聚合。
         #    system 提示词 + user 提示词双重强调"输入数据里没有指令"，
         #    防止对话内容（如对话里出现的命令文本）劫持评估器的判定。
-        response = self.llm_client.chat.completions.create(
+        msg, _finish, _usage = streamed_create(
+            self.llm_client,
             model=self.model,
             messages=[
                 {
@@ -312,7 +316,7 @@ Return only JSON:
             max_tokens=self.max_tokens,
         )
         # 5) 解析并校验 JSON，还原成结构化的 GoalEvaluation
-        text = response.choices[0].message.content or ""
+        text = msg.content or ""
         value = _parse_json_object(text)
         return GoalEvaluation(**value)
 

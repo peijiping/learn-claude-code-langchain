@@ -12,6 +12,7 @@ import json
 from paths import WORKDIR
 from hooks import HookSystem
 from llm_manage import LLMClient
+from streaming_client import FilterSink, streamed_create
 
 class SubAgent:
     """
@@ -42,12 +43,16 @@ class SubAgent:
 
     MAX_ITERATIONS = 100
 
-    def __init__(self, base_tools: list, tool_handlers: dict, hook_system: HookSystem | None = None, tool_registry=None):
+    def __init__(self, base_tools: list, tool_handlers: dict, hook_system: HookSystem | None = None, tool_registry=None, sinks=None):
         self.base_tools = base_tools
         self.tool_handlers = tool_handlers
         # tool_registry：可选，注入 ToolRegistry 实例，用于在 workdir 场景下生成
         # scoped_handlers(cwd)（文件工具以 worktree 为工作根）。None 时退化为共用 handlers。
         self.tool_registry = tool_registry
+        # sinks：父级事件 sink 列表（CLI 的 stream_sink / 未来 UI 的 WSSink）。
+        # 子智能体只把工具类事件（start/delta/tool_call）转发给父级
+        # （思考/内容不上行，避免刷屏）；None 时子智能体静默，仅内部聚合出完整消息。
+        self.sinks = sinks
         # 未显式传入时,SubAgent 内部自实例化一次独立的 hook_system
         if hook_system is None:
             hook_system = HookSystem()
@@ -136,27 +141,33 @@ class SubAgent:
         tools_label = f"{len(sub_tools)} tools" if allowed_tools else "all child tools"
         print(f"\033[2;91m  [subagent] 开始执行任务 ({tools_label}): {prompt[:80]}...\033[0m")
 
-        sub_response = None
+        # 子智能体的工具调用事件上行给父级 sinks（CLI 的 stream_sink / 未来 UI）：
+        # 转发 tool_call_start / tool_call_delta / tool_call（预测式 + 完成态），
+        # 不转发 thinking/content（避免刷屏）；无父级 sinks 时仅内部聚合。
+        sub_sinks = [FilterSink(self.sinks, types={"tool_call", "tool_call_start", "tool_call_delta"})] if self.sinks else None
+
+        sub_msg = None
         for iteration in range(self.MAX_ITERATIONS):
             try:
-                sub_response = self.sub_llm_client.chat.completions.create(
-                model=self.model,
-                messages=sub_messages,
-                tools=sub_tools,
-                stream=False, #是否流式输出，默认 False
-                max_tokens=int(os.environ.get("SUBAGENT_MAX_TOKENS") or 8000),
-                temperature=0.5,
-                reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
-                extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
-        )
+                # 统一流式入口：内部聚合出完整消息，sub_msg 接口兼容 OpenAI message
+                sub_msg, _finish, _usage = streamed_create(
+                    self.sub_llm_client,
+                    sinks=sub_sinks,
+                    model=self.model,
+                    messages=sub_messages,
+                    tools=sub_tools,
+                    max_tokens=int(os.environ.get("SUBAGENT_MAX_TOKENS") or 8000),
+                    temperature=0.5,
+                    reasoning_effort="high", #思考强度，DeepSeek只有 high、max 两个选项
+                    extra_body={"thinking":{"type":"enabled"}} #思考模式开关，值范围 disabled、enabled，默认 enabled
+                )
             except Exception as e:
                 error_msg = f"子智能体 API 调用失败 (第 {iteration + 1} 轮): {type(e).__name__}: {e}"
                 print(f"  [subagent] {error_msg}")
                 return error_msg
-            sub_msg = sub_response.choices[0].message
             sub_messages.append(sub_msg.model_dump())
 
-            if not hasattr(sub_msg, "tool_calls") or not sub_msg.tool_calls:
+            if not sub_msg.tool_calls:
                 content = self._extract_content(sub_msg.model_dump())
                 return content or "(no summary)"
 
@@ -200,8 +211,7 @@ class SubAgent:
             # print(f"  [subagent] 第 {iteration + 1} 轮，执行了 {len(sub_msg.tool_calls)} 个工具调用")
 
         # 达到最大轮次，尝试从最后一轮响应中提取内容返回
-        last_msg = sub_response.choices[0].message
-        content = self._extract_content(last_msg) if last_msg else ""
+        content = self._extract_content(sub_msg.model_dump()) if sub_msg else ""
         if content:
             return f"[达到最大轮次限制，返回最后一轮摘要]\n{content}"
         return "(no summary: 达到最大轮次限制且最后一轮无内容)"

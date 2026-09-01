@@ -41,6 +41,7 @@ from system_prompt import SystemPromptBuilder
 from error_recovery import ErrorRecovery, RecoveryAction
 from hooks import HookSystem
 from utils import truncate_chars
+from streaming_client import PrintSink, streamed_create
 
 
 # 加载环境变量
@@ -81,6 +82,8 @@ class Agent:
 
         # ── silent 模式：抑制所有打印输出（cron 定时任务用） ──
         self.silent = silent
+        # 主循环的 CLI 增量输出 sink（流式 thinking/content 逐字打印）
+        self.stream_sink = PrintSink(silent=self.silent)
 
         # ── 依赖（默认惰性构造；允许外部注入，多实例可共享/自定义） ──
         self.skills = skills if skills is not None else SkillLoader(SKILLS_DIR)
@@ -118,10 +121,12 @@ class Agent:
         # 由 CLI 的 /teams 置 True、/subagent 置 False，决定 agent_loop 喂哪套工具集。
         self.team_mode = False
 
-        # 子智能体：复用本实例的工具集/处理器/hooks；注入 tool_registry 供 workdir 场景
+        # 子智能体：复用本实例的工具集/处理器/hooks；注入 tool_registry 供 workdir 场景，
+        # 并注入本实例的 stream_sink，让子智能体的 tool_call 事件上行到同一输出通道
         self.subagent_runner = SubAgent(
             self.tools.base_tools, self.tools.handlers, self.hook_system,
             tool_registry=self.tools,
+            sinks=[self.stream_sink],
         )
 
         # 系统 prompt：注入本实例的 skills / memory / tools
@@ -459,41 +464,37 @@ class Agent:
 
             # S11 Error Recovery — 错误不是结束，是重试的开始（详见 agents/error_recovery.py）
             try:
-                # 调用大模型执行当前轮次的回复
-                # lambda 通过闭包把当前轮次的 max_tokens / model 锁住，控制器在循环里
-                # 可能会通过 ESCALATE / FALLBACK 改变这些值，但本轮 lambda 已固定
+                # 调用大模型执行当前轮次的回复。
+                # 走统一流式入口：增量事件经 self.stream_sink 逐字打印（thinking/content），
+                # 同时聚合出完整消息；lambda 通过闭包把当前轮次的 max_tokens / model 锁住，
+                # 控制器在循环里可能会通过 ESCALATE / FALLBACK 改变这些值，但本轮 lambda 已固定。
+                # 返回 (message, finish_reason, usage)，message 接口兼容 OpenAI message，
+                # 下游历史追加 / 截断恢复 / goal 评估无需改动。
                 llm_response = self.recovery.with_retry(
                     lambda mt=self.recovery.current_max_tokens, mdl=self.recovery.current_model:
-                    self.llm_client.chat.completions.create(
+                    streamed_create(
+                        self.llm_client,
+                        sinks=[self.stream_sink],
                         model=mdl,
                         messages=self.history_messages,
                         max_tokens=mt,
                         tools=self.tools.build_agent_tools(team_mode=self.team_mode),
                         tool_choice="auto",  # 工具选择，值域 none、auto、required，默认 auto
                         parallel_tool_calls=True,  # 是否并行执行工具调用，默认 False
-                        stream=False,  # 是否流式输出，默认 False
                         temperature=0.5,
                         reasoning_effort="high",  # 思考强度，DeepSeek只有 high、max 两个选项
                         extra_body={"thinking": {"type": "enabled"}},  # 思考模式开关
                     )
                 )
-                # 从大模型回复中提取消息
-                response_msg = llm_response.choices[0].message
+                response_msg, finish_reason, usage = llm_response
                 # 提取大模型回复中的工具调用
                 response_tool_calls = response_msg.tool_calls or []
                 # 累计 token 消耗（OpenAI usage：prompt_tokens 输入 + completion_tokens 输出）。
                 # /goal 状态里的"目标期间花费" = 当前累计 − 设置目标时的累计
                 # （tokens_at_start，见 Agent.set_goal）
-                usage = getattr(llm_response, "usage", None)
-                if usage is not None:
-                    self.total_tokens += int(getattr(usage, "prompt_tokens", 0) or 0) \
-                        + int(getattr(usage, "completion_tokens", 0) or 0)
-                # 打印大模型的思考和回复内容
-                # ANSI: \033[2m=暗(细体)，\033[90m=灰色，\033[0m=重置
-                self._print(
-                    f"\033[2;90m[thinking]\n{truncate_chars(response_msg.reasoning_content, 300)}\n[/thinking]\033[0m"
-                )
-                # self._print(f"[本轮回复]\n{response_msg.content}")
+                if usage:
+                    self.total_tokens += int(usage.get("prompt_tokens", 0) or 0) \
+                        + int(usage.get("completion_tokens", 0) or 0)
 
             except Exception as e:
                 # 外层异常处理：内层 with_retry 主动 raise 出来的"非临时错误"会到这一层。
@@ -507,8 +508,8 @@ class Agent:
             # Path 1：max_tokens 截断恢复
             # 注意：max_tokens 不是异常，是 API 正常返回的 finish_reason 之一
             # DeepSeek 走 OpenAI 兼容协议，没有 Anthropic 的 stop_reason 字段；
-            # 截断的判定在 choices[0].finish_reason == "length"（OpenAI 官方语义）
-            if llm_response.choices[0].finish_reason == "length":
+            # 截断的判定在 finish_reason == "length"（OpenAI 官方语义）
+            if finish_reason == "length":
                 if self.recovery.handle_truncation(
                     response_msg, self.history_messages, self.session_manager, self.session_file
                 ) == RecoveryAction.ABORT:
@@ -582,14 +583,8 @@ class Agent:
                     continue
                 return
 
-            # ANSI: \033[2m=暗(细体)，\033[93m=浅黄，\033[0m=重置（与上方灰色 [thinking] 区分）
-            self._print(f"\033[2;93m[本轮大模型调用工具数量] {len(response_tool_calls)}\033[0m")
-            for tc in response_tool_calls:
-                # 单行打印超 200 字符截断，避免大参数（如大段代码/长路径）刷屏
-                self._print(
-                    f"\033[2;93m{truncate_chars(f"  - {tc.function.name}({tc.function.arguments})  #id={tc.id}\n ")}\033[0m"
-                )
-            self._print(f"\033[2;93m[本轮大模型工具调用结束,等待执行结果]\033[0m")
+            # 注：工具调用的工具行已由 PrintSink 在流式阶段预测式渲染（P3），
+            # 这里不再重复打印汇总，避免同一工具调用出现两行。
             # 三阶段执行：后台 → 并行 → 串行, 互斥分桶。
             #   后台桶: args.run_in_background=true, 立即分发给 background_manager 守护线程
             #   并行桶: args.parallel=true (且非后台), 线程池并发, 全部完成才走下一步
