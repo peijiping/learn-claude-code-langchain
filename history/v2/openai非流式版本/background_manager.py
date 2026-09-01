@@ -141,6 +141,16 @@ class BackgroundManager:
                 )
             return f"[{task_id} still {t['status']}] {t['command'][:60]}"
 
+    # 是否仍有后台任务在运行（goal Stop 钩子的 defer 分支用）：
+    # 有任务处于 running 状态时，goal 评估"是否达成"不可靠，应暂缓判定。
+    def has_running(self) -> bool:
+        """Return True if any background task is still running."""
+        with self.background_lock:
+            return any(
+                t["status"] == "running"
+                for t in self.background_tasks.values()
+            )
+
     # 收集所有已完成的后台任务，生成 <task_notification> 通知列表。
     # 设计要点（与教程版不同）：
     # - 通知里同时给 <summary>（200 字符预览）+ <full_output>（完整结果）：

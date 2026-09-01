@@ -65,6 +65,11 @@ TASKS_DIR = WORKDIR / ".tasks"
 # 持久化路径：所有 durable=True 的任务会被序列化到该文件，重启后自动恢复
 DURABLE_PATH = WORKDIR /".scheduler"/ "scheduled_tasks.json"
 
+# 工作流运行时目录（s16：快照 + journal + 输出文件，对应教程的 .runtime/）
+WORKFLOW_DIR = WORKDIR / ".workflow"
+# 最近一次工作流 runId（resume 入口从这里读取）
+WORKFLOW_LAST_RUN = WORKFLOW_DIR / "last_run.txt"
+
 
 def ensure_dirs() -> None:
     """一次性创建所有需要预先存在的目录（幂等）。"""
@@ -74,6 +79,7 @@ def ensure_dirs() -> None:
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
     DURABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
     MCP_DIR.mkdir(parents=True, exist_ok=True)
+    WORKFLOW_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def todo_file_for_session(session_num: int) -> Path:
