@@ -1,0 +1,181 @@
+/* ── 左侧边栏 ── */
+.sidebar {
+  width: var(--sidebar-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-sidebar);
+  border-right: 1px solid var(--color-border);
+  min-height: 0;
+}
+
+.sidebar-block {
+  padding: var(--sp-2);
+}
+
+/* 快捷操作 */
+.quick-action {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: var(--fs-md);
+}
+.quick-action:hover {
+  background: var(--color-bg-hover);
+}
+.quick-label {
+  flex: 1;
+  text-align: left;
+}
+.quick-shortcut {
+  color: var(--color-text-secondary);
+  font-size: var(--fs-xs);
+}
+
+/* 任务树 */
+.tasktree {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.tasktree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--color-text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.tasktree-actions {
+  display: flex;
+  gap: var(--sp-1);
+}
+.mini-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+}
+.mini-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.tasktree-project {
+  padding: 0 var(--sp-3) var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tasktree-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 var(--sp-2);
+}
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--color-text-primary);
+}
+.tree-node:hover {
+  background: var(--color-bg-hover);
+}
+.tree-node.active {
+  background: var(--color-bg-active);
+  color: var(--color-accent);
+}
+.tree-node.muted {
+  color: var(--color-text-secondary);
+}
+.tree-chevron {
+  transition: transform 0.15s;
+}
+.tree-label {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-count {
+  color: var(--color-text-secondary);
+  font-size: var(--fs-xs);
+}
+.tasktree-empty {
+  padding: var(--sp-3);
+  color: var(--color-text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* 用户卡 */
+.usercard {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-top: 1px solid var(--color-border);
+}
+.usercard-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff9a5a, #ff7a5a);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: var(--fs-md);
+}
+.usercard-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.usercard-name {
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.badge-lite {
+  background: var(--color-badge);
+  color: #fff;
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  flex: none;
+}
+.usercard-settings {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+}
+.usercard-settings:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}

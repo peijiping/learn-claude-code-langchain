@@ -1,0 +1,118 @@
+import { spawn, ChildProcess, execFileSync } from 'child_process'
+import path from 'path'
+
+export type PythonStatus = 'starting' | 'running' | 'crashed' | 'stopped'
+
+export interface PythonManagerOptions {
+  onStatus: (status: PythonStatus) => void
+  onLog?: (line: string) => void
+}
+
+/**
+ * pythonManager - 拉起/监控/重启 Python 后端（ws_bridge.py）。
+ * 子进程退出会被监控；调用方通过 onStatus 得知崩溃并决定是否一键重启。
+ */
+export class PythonManager {
+  private child: ChildProcess | null = null
+  private status: PythonStatus = 'stopped'
+  private opts: PythonManagerOptions
+
+  constructor(opts: PythonManagerOptions) {
+    this.opts = opts
+  }
+
+  get isRunning(): boolean {
+    return this.status === 'running' || this.status === 'starting'
+  }
+
+  private setStatus(s: PythonStatus): void {
+    if (this.status !== s) {
+      this.status = s
+      this.opts.onStatus(s)
+    }
+  }
+
+  private resolvePython(): string {
+    // 优先用项目 venv（已安装 openai/websockets），再退回系统解释器
+    const repoRoot = path.resolve(__dirname, '../../..')
+    const venvCandidates = [
+      path.join(repoRoot, '.venv', 'bin', 'python'),
+      path.join(repoRoot, '.venv', 'bin', 'python3')
+    ]
+    for (const vp of venvCandidates) {
+      try {
+        execFileSync(vp, ['--version'], { stdio: 'ignore' })
+        return vp
+      } catch {
+        /* 尝试下一个 */
+      }
+    }
+    for (const cmd of ['python3', 'python']) {
+      try {
+        execFileSync(cmd, ['--version'], { stdio: 'ignore' })
+        return cmd
+      } catch {
+        /* 尝试下一个 */
+      }
+    }
+    throw new Error('未找到可用的 python3 / python 解释器')
+  }
+
+  start(): void {
+    if (this.child) return
+    this.setStatus('starting')
+
+    // frontend/ 在仓库顶层，仓库根 = frontend 的两级上级向上（out/main → 仓库根）
+    const repoRoot = path.resolve(__dirname, '../../..')
+    const script = path.join(repoRoot, 'agents', 'ws_bridge.py')
+    const port = process.env.AGENT_WS_PORT || '8765'
+
+    let python: string
+    try {
+      python = this.resolvePython()
+    } catch (err) {
+      this.opts.onLog?.(`[python] ${(err as Error).message}`)
+      this.setStatus('crashed')
+      return
+    }
+
+    const child = spawn(python, [script], {
+      cwd: repoRoot,
+      env: { ...process.env, AGENT_WS_PORT: port },
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    this.child = child
+
+    child.stdout?.on('data', (d: Buffer) => this.opts.onLog?.(d.toString()))
+    child.stderr?.on('data', (d: Buffer) => this.opts.onLog?.(d.toString()))
+
+    // 简单探测：桥起来后会打印 "WS server on ..."，据此标记 running
+    const readyProbe = (d: Buffer): void => {
+      const text = d.toString()
+      this.opts.onLog?.(text)
+      if (text.includes('WS server') || text.includes('listening')) {
+        this.setStatus('running')
+        child.stdout?.removeListener('data', readyProbe)
+      }
+    }
+    child.stdout?.on('data', readyProbe)
+
+    child.on('exit', (code) => {
+      this.child = null
+      this.opts.onLog?.(`[python] 退出 code=${code}`)
+      this.setStatus(code === 0 ? 'stopped' : 'crashed')
+    })
+  }
+
+  restart(): void {
+    this.stop()
+    this.start()
+  }
+
+  stop(): void {
+    if (!this.child) return
+    this.child.kill('SIGTERM')
+    this.child = null
+    this.setStatus('stopped')
+  }
+}
