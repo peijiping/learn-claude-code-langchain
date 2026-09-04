@@ -48,7 +48,10 @@ class TaskManager:
             tasks_dir: 任务数据存储目录的路径,不传则默认使用 TASKS_DIR
         """
         self.task_dir = tasks_dir if tasks_dir else TASKS_DIR  # 任务文件存储目录
-        self.task_dir.mkdir(exist_ok=True)  # 如果目录不存在则创建
+        # 先判断再创建：目录已存在时跳过 mkdir，避免运行环境的文件代理对
+        # exist_ok=True 的 mkdir 也误报 EEXIST 导致启动崩溃
+        if not self.task_dir.exists():
+            self.task_dir.mkdir(parents=True, exist_ok=True)
         # 作用域：会话内任务板用它把任务限定在某个会话（如 "session_3" / "cron_1"）。
         # None 表示旧的全局看板（无会话上下文，向后兼容）。
         self.scope: str | None = None

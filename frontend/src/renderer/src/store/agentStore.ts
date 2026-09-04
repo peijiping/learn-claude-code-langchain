@@ -106,7 +106,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
     switch (ev.kind) {
       case 'sessions': {
-        const list = ((ev.payload as { sessions?: SessionMeta[] })?.sessions as SessionMeta[]) || []
+        const payload = ev.payload as { sessions?: SessionMeta[] } | SessionMeta[] | null
+        const raw = Array.isArray(payload) ? payload : payload?.sessions
+        // 后端异常/未就绪时可能下发非数组，忽略而不是让渲染树崩溃
+        if (!Array.isArray(raw)) break
+        const list = raw as SessionMeta[]
         set((s) => ({ sessions: list, activeSession: s.activeSession ?? list[0]?.num ?? null }))
         break
       }
@@ -134,7 +138,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   refreshSessions: async () => {
     try {
       const list = (await window.agent.listSessions()) as SessionMeta[]
-      set((s) => ({ sessions: list as unknown as SessionMeta[], activeSession: s.activeSession ?? list[0]?.num ?? null }))
+      // 后端未就绪时主进程会返回 { error: 'backend timeout' } 等非数组值，
+      // 不校验会把对象当数组存入，导致 TaskTree 里 sessions.map 崩溃白屏
+      if (!Array.isArray(list)) return
+      set((s) => ({ sessions: list, activeSession: s.activeSession ?? list[0]?.num ?? null }))
     } catch {
       /* 忽略 */
     }

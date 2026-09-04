@@ -36,7 +36,7 @@ function request(kind: string): Promise<unknown> {
       settled = true
       const i = pending.findIndex((p) => p.kind === kind && p.timer === timer)
       if (i >= 0) pending.splice(i, 1)
-      resolve({ error: 'backend timeout' })
+      resolve(null)
     }, 5000)
     const handleResult = (v: unknown): void => {
       if (settled) return

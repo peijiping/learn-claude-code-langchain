@@ -4,6 +4,7 @@ import Sidebar from '@components/Sidebar/Sidebar'
 import ChatPanel from '@components/Chat/ChatPanel'
 import SettingsPanel from '@components/SettingsPanel'
 import StatusBar from '@components/StatusBar'
+import ErrorBoundary from '@components/common/ErrorBoundary'
 import Toast from '@components/common/Toast'
 
 export default function App(): JSX.Element {
@@ -12,14 +13,16 @@ export default function App(): JSX.Element {
   const settingsOpen = useAgentStore((s) => s.settingsOpen)
 
   return (
-    <div className="app">
-      <div className="app-body">
-        <Sidebar />
-        <ChatPanel />
+    <ErrorBoundary>
+      <div className="app">
+        <div className="app-body">
+          <Sidebar />
+          <ChatPanel />
+        </div>
+        <StatusBar />
+        {settingsOpen && <SettingsPanel />}
+        <Toast />
       </div>
-      <StatusBar />
-      {settingsOpen && <SettingsPanel />}
-      <Toast />
-    </div>
+    </ErrorBoundary>
   )
 }

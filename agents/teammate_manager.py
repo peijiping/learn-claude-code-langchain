@@ -77,7 +77,9 @@ class TeammateManager:
             tools: ToolRegistry 实例，用于执行工具调用（默认构造实例，非全局单例）
         """
         self.dir = team_dir
-        self.dir.mkdir(exist_ok=True)                      # 确保目录存在
+        # 先判断再创建：目录已存在时跳过 mkdir，避免文件代理对 exist_ok 误报 EEXIST
+        if not self.dir.exists():
+            self.dir.mkdir(parents=True, exist_ok=True)    # 确保目录存在
         self.config_path = self.dir / "config.json"        # 团队配置文件路径
         self.config = self._load_config()                  # 加载团队配置
         self.threads = {}                                  # 存储队友线程 {name: Thread}
